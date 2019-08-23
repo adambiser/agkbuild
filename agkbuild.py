@@ -1372,6 +1372,7 @@ class AgkBuild:
 
 
 def _exec_build_tasks(filename):
+    print(f"Starting agkbuild: {filename}")
     cwd, filename = os.path.split(os.path.abspath(filename))
     os.chdir(cwd)
     import importlib.machinery
