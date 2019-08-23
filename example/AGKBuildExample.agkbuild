@@ -1,0 +1,34 @@
+DEMO_FILES = ['demo.txt', 'Folder2/demo.txt']
+FULL_FILES = ['full.txt']
+
+# This is the regular full version.
+AgkBuild(project_file='AGKBuildExample.agk',
+         include_tags={"demo": "demo-off.agc",
+                       "steam": "steam-off.agc"},
+         exclude_media=DEMO_FILES,
+         include_files=[('README.txt', 'READTHIS.txt')],
+         platforms=WINDOWS | LINUX | GOOGLE_APK | AMAZON_APK | HTML5,
+         architecture=x86 | x64,
+         )
+
+# This is the full version release for Steam.
+AgkBuild(project_file='AGKBuildExample.agk',
+         release_name='Steam',
+         include_tags={"demo": "demo-off.agc",
+                       "steam": "steam-on.agc"},
+         exclude_media=DEMO_FILES,
+         platforms=WINDOWS,
+         architecture=x86,
+         )
+
+# This is the demo release.
+AgkBuild(project_file='AGKBuildExample.agk',
+         project_name='AGKBuildExampleDemo',
+         agk_package_name='com.test.agkbuildexampledemo',
+         include_tags={"demo": "demo-off.agc",
+                       "steam": "steam-off.agc"},
+         exclude_media=FULL_FILES,
+         platforms=WINDOWS | LINUX | GOOGLE_APK | AMAZON_APK | HTML5,
+         architecture=x86,
+         archive_output=True,
+         )
