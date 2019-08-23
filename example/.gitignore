@@ -1,2 +1,7 @@
 release
 *.exe
+
+# These exist only temporarily during the build process.
+build_tmp
+media_exclude
+main.agc.backup

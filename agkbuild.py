@@ -18,6 +18,7 @@ that are defined in the AGK project file rather than the default release folders
 The export_apk and export_html5 functions are based on code found at:
 https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c
 """
+import argparse
 from collections import OrderedDict
 from enum import IntFlag, auto
 import os
@@ -107,41 +108,12 @@ class IniFile:
     #             fp.write('\n')
     #     os.replace(temp, filename)
 
-    def get_string(self, section, key) -> str:
-        """
-        Gets a string value within the file.
-
-        :param section: The section within the file.
-        :param key: The key within the section.
-        """
+    def __getitem__(self, item) -> str:
+        section, key = item
         return self._sections[section][key]
 
-    def get_int(self, section, key) -> int:
-        """
-        Gets an integer value within the file.
-
-        :param section: The section within the file.
-        :param key: The key within the section.
-        """
-        return int(self._sections[section][key])
-
-    def get_bool(self, section, key) -> bool:
-        """
-        Gets a boolean value within the file.
-
-        :param section: The section within the file.
-        :param key: The key within the section.
-        """
-        return bool(self._sections[section][key])
-
-    def set_value(self, section, key, value):
-        """
-        Sets a value within the file.
-
-        :param section: The section within the file.
-        :param key: The key within the section.
-        :param value: The new value.
-        """
+    def __setitem__(self, key, value):
+        section, key = key
         self._sections[section][key] = value
 
 
@@ -166,12 +138,6 @@ class AgkProject(IniFile):
                     self._version = match.group(1)
                     print(f"Found project version: {self._version}")
                     break
-
-    # def __enter__(self):
-    #     return self
-    #
-    # def __exit__(self, exc_type, exc_val, exc_tb):
-    #     return False
 
     @property
     def base_path(self):
@@ -316,7 +282,7 @@ class AgkCompiler:
             # Check IDE config file.
             try:
                 config = IniFile(os.path.join(os.getenv('LOCALAPPDATA'), 'agk', 'geany.conf'))
-                compiler_path = config.get_string('buildAGK', 'compiler_path').replace('\\\\', '\\')
+                compiler_path = config['buildAGK', 'compiler_path'].replace('\\\\', '\\')
                 match = re.match(r'(.*)\\Tier 1\\Compiler', compiler_path, re.IGNORECASE)
                 if match:
                     if os.path.exists(match.group(1)):
@@ -354,53 +320,53 @@ class AgkCompiler:
         if completed_process.returncode != 0:
             raise SystemError(f'AppGameKit compilation error:\nReturn code: {completed_process.returncode}')
 
-    def export_apk(self, project: AgkProject, app_type: int = None, package_name: str = None):
+    def export_apk(self, project: AgkProject, **kwargs):  # app_type: int = None, package_name: str = None):
         """
         Exports the project to an Android AGK file.
 
         :param project: The project to export.
-        :param app_type: When given, overrides the project's APK app type setting.
-        :param package_name: When given, overrides the project's APK package name.
+        :param kwargs: Used to override various APK settings.  These args have a 'apk_' prefix.
         :return: Path to the generated APK file.
         """
-        if app_type is None:
-            app_type = project.get_int('apk_settings', 'app_type')
+        def get_value(name):
+            return kwargs.get(f'apk_{name}', project['apk_settings', name])
+
+        app_type = int(get_value('app_type'))
         print(f'Exporting project as {AgkCompiler.APK_TYPE_NAMES[app_type]} APK')
-        app_name = project.get_string('apk_settings', 'app_name')
-        if not package_name:
-            package_name = project.get_string('apk_settings', 'package_name')
-        app_icon = project.get_string('apk_settings', 'app_icon_path')
-        notif_icon = project.get_string('apk_settings', 'notif_icon_path')
-        ouya_icon = project.get_string('apk_settings', 'ouya_icon_path')
-        firebase_config = project.get_string('apk_settings', 'firebase_config_path')
-        orientation = project.get_int('apk_settings', 'orientation')
+        app_name = get_value('app_name')
+        package_name = get_value('package_name')
+        app_icon = get_value('app_icon_path')
+        notif_icon = get_value('notif_icon_path')
+        ouya_icon = get_value('ouya_icon_path')
+        firebase_config = get_value('firebase_config_path')
+        orientation = int(get_value('orientation'))
         try:
             orientation = [AgkCompiler.ORIENTATION_LANDSCAPE,
                            AgkCompiler.ORIENTATION_PORTRAIT,
                            AgkCompiler.ORIENTATION_ALL][orientation]
         except IndexError:
             orientation = AgkCompiler.ORIENTATION_ALL
-        arcore_mode = project.get_int('apk_settings', 'arcore')
-        app_sdk = AgkCompiler.SDK_VERSIONS[project.get_int('apk_settings', 'sdk_version')]['api']
+        arcore_mode = int(get_value('arcore'))
+        app_sdk = AgkCompiler.SDK_VERSIONS[int(get_value('sdk_version'))]['api']
         if not app_sdk:
             raise ValueError("Invalid sdk_version.")
-        url_scheme = project.get_string('apk_settings', 'url_scheme')
-        deep_link = project.get_string('apk_settings', 'deep_link')
-        google_play_app_id = project.get_string('apk_settings', 'play_app_id')
-        admob_app_id = project.get_string('apk_settings', 'admob_app_id')
+        url_scheme = get_value('url_scheme')
+        deep_link = get_value('deep_link')
+        google_play_app_id = get_value('play_app_id')
+        admob_app_id = get_value('admob_app_id')
         # permissions
-        permission_flags = project.get_int('apk_settings', 'permission_flags')
+        permission_flags = int(get_value('permission_flags'))
         # signing
         # keystore_path = None
         # version_name = None
-        keystore_file = project.get_string('apk_settings', 'keystore_path')
-        keystore_password = ''
-        version_number = project.get_string('apk_settings', 'version_name')
-        build_number = project.get_int('apk_settings', 'version_number')
-        alias_name = project.get_string('apk_settings', 'alias')
-        alias_password = ''
+        keystore_file = get_value('keystore_path')
+        keystore_password = kwargs.get('apk_keystore_password', '')
+        version_number = get_value('version_name')
+        build_number = int(get_value('version_number'))
+        alias_name = get_value('alias')
+        alias_password = kwargs.get('apk_alias_password', '')
         if USE_DEFINED_PROJECT_OUTPUT_PATHS:
-            output_file = project.get_string('apk_settings', 'output_path')
+            output_file = project['apk_settings', 'output_path']
         else:
             output_file = os.path.join(project.get_release_folder(
                     f"android_{AgkCompiler.APK_TYPE_NAMES[app_type].lower()}"),
@@ -1037,18 +1003,21 @@ class AgkCompiler:
             _rmtree(temp_folder)
         return output_file
 
-    def export_html5(self, project: AgkProject):
+    def export_html5(self, project: AgkProject, **kwargs):
         """
         Exports the project as html5.
 
         :param project: The project to export.
         :return: The path to the export folder.
         """
+        def get_value(name):
+            return kwargs.get(f'html5_{name}', project['html5_settings', name])
+
         print('Exporting project as HTML5')
-        commands_used = project.get_int('html5_settings', 'commands_used')
-        dynamic_memory = project.get_bool('html5_settings', 'dynamic_memory')
+        commands_used = int(get_value('commands_used'))
+        dynamic_memory = bool(get_value('dynamic_memory'))
         if USE_DEFINED_PROJECT_OUTPUT_PATHS:
-            output_folder = project.get_string('html5_settings', 'output_path')  # Called output_file in the C++ code.
+            output_folder = project['html5_settings', 'output_path']  # Called output_file in the C++ code.
         else:
             output_folder = project.get_release_folder("html5")
 
@@ -1218,7 +1187,6 @@ class AgkCompiler:
         return output_folder
 
 
-# TODO keystore file and password
 class AgkBuild:
     def __init__(self,
                  project_file: str,
@@ -1229,8 +1197,8 @@ class AgkBuild:
                  include_tags: dict = None,
                  include_files: List[str] = None,
                  exclude_media: List[str] = None,
-                 agk_package_name: str = None,
-                 archive_output: bool = False):
+                 archive_output: bool = False,
+                 **kwargs):
         """
         Creating an instance of this class compiles a project for the specified platforms.
 
@@ -1259,9 +1227,12 @@ class AgkBuild:
             This parameter has no affect on Android exports.
         :param exclude_media: List of file paths relative to the 'media' folder to be excluded when building.  The files
             are moved into 'media_exclude' while building and exported and moved back into 'media' when finished.
-        :param agk_package_name: Overrides the project's AGK package name.
         :param archive_output: When true, exported output folders are archived into zip files.
             This parameter has no affect on Android exports.
+        :param apk_package_name: Overrides the project's APK package name.
+        :param apk_keystore_file: Overrides the project's keystore file for Android packages.
+        :param apk_keystore_password: Sets the keystore password for exporting Android packages.
+        :param kwargs: Used to set or override APK and HTML5 export settings.
         :return:
         """
         if not platforms or not isinstance(platforms, Platform):
@@ -1347,15 +1318,15 @@ class AgkBuild:
             if platforms & Platform.LINUX:
                 post_export(compiler.export_linux(project, architecture))
             if platforms & Platform.ANDROID:
-                compiler.export_apk(project, package_name=agk_package_name)
+                compiler.export_apk(project, **kwargs)
             if platforms & Platform.HTML5:
                 post_export(compiler.export_html5(project))
             if platforms & Platform.GOOGLE_APK:
-                compiler.export_apk(project, AgkCompiler.APK_TYPE_GOOGLE, agk_package_name)
+                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
             if platforms & Platform.AMAZON_APK:
-                compiler.export_apk(project, AgkCompiler.APK_TYPE_AMAZON, agk_package_name)
+                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
             if platforms & Platform.OUYA_APK:
-                compiler.export_apk(project, AgkCompiler.APK_TYPE_OUYA, agk_package_name)
+                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
         finally:
             os.replace(backup_code_file, main_code_file)
             # Restore exclude media files back into the media folder.
@@ -1391,9 +1362,12 @@ def _exec_build_tasks(filename):
     spec.loader.exec_module(tasks)
 
 
+def _main():
+    parser = argparse.ArgumentParser(description='An AppGameKit build automation script.')
+    parser.add_argument('buildfile', metavar='buildfile', type=str, help='The agkbuild file to process.')
+    args = parser.parse_args()
+    _exec_build_tasks(args.buildfile)
+
+
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv) == 2:
-        _exec_build_tasks(sys.argv[1])
-    else:
-        print("To use this module from the command line, pass an .agkbuild file as the first and only parameter.")
+    _main()
