@@ -2,7 +2,7 @@
 
 ## What is agkbuild?
 
-Apkbuild is a Python script to automate building and exporting AppGameKit Classic Tier 1 projects.
+Agkbuild is a Python script to automate building and exporting AppGameKit Classic Tier 1 projects.
 Sometimes write once, run anywhere doesn't quite cut it and as you develop your game, you might end up having a full version, a demo, a Steam release, Android releases on Google Play and Amazon, etc. all needing to be built from the same code base.
 
 This script allows you to swap #include/#insert files depending on what's being built, set the APK package name, and more.
