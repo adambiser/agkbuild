@@ -48,6 +48,7 @@ class Platform(IntFlag):
 
 
 class Architecture(IntFlag):
+    """List of architextures for Linux and Windows exports."""
     x86 = auto()  # 32-bit, the default flag if none are set.
     x64 = auto()  # 64-bit
 
@@ -64,7 +65,7 @@ def _rmtree(folder):
 
 
 class IniFile:
-    """A class that reads and provides access to the values within an INI file."""
+    """Reads and provides access to the values within an INI file."""
     def __init__(self, filename):
         """
         Opens and loads the given INI file
@@ -358,8 +359,8 @@ class AgkCompiler:
         Exports the project to an Android AGK file.
 
         :param project: The project to export.
-        :param app_type: When given, overrides the project's AGK app type setting.
-        :param package_name: When given, overrides the project's AGK package name.
+        :param app_type: When given, overrides the project's APK app type setting.
+        :param package_name: When given, overrides the project's APK package name.
         :return: Path to the generated APK file.
         """
         if app_type is None:
@@ -1252,6 +1253,9 @@ class AgkBuild:
             between multiple exports to the same platform.  It does not affect the project name.
         :param include_tags: The dictionary of include tags and include files.
         :param include_files: List of extra files to include in the release folders.
+            The list can be a mixture of strings that are paths relative to the project folder which get copied relative
+            to the output folder, or tuples where the first item is an absolute path or a path relative to the project
+            folder and the second item is the path it is copied to relative to the output folder.
             This parameter has no affect on Android exports.
         :param exclude_media: List of file paths relative to the 'media' folder to be excluded when building.  The files
             are moved into 'media_exclude' while building and exported and moved back into 'media' when finished.
