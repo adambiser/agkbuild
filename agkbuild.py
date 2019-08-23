@@ -1286,7 +1286,7 @@ class AgkBuild:
                             if not include_tags:
                                 raise ValueError("The project's main.agc file contains include tags, "
                                                  "but none were given.")
-                            if not include_tags:
+                            if name not in include_tags:
                                 raise ValueError(f"No value given for include tag named '{name}'.")
                             wfp.write(f'{include_type} "{include_tags[name]}"')
                         else:
@@ -1372,6 +1372,8 @@ class AgkBuild:
 
 
 def _exec_build_tasks(filename):
+    cwd, filename = os.path.split(os.path.abspath(filename))
+    os.chdir(cwd)
     import importlib.machinery
     import importlib.util
     loader = importlib.machinery.SourceFileLoader('tasks', filename)
