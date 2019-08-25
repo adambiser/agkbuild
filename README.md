@@ -11,7 +11,7 @@ Play and Amazon, etc. all being built from the same code base.
 AppGameKit doesn't have conditional compilation and #include/#insert always performed, even inside of a false condition.
 
 ```
-if 0
+if 0  // No conditional compilation
     #include "steam.agc"  // This file is always included!
 endif
 ```
