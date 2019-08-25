@@ -10,7 +10,7 @@ This will scan the project's main.agc file for a constant called VERSION to use 
 Exporting Android APKs differs from the other export options because it produces a single file rather than a folder.
 These are already archives
 
-Release folders use the following naming format: project_name[_release_name][_version]_platform[_architecture(s)].
+Release folders use the following naming format: project_name[_release_name][_version]_platform[_architectures].
 
 Setting USE_DEFINED_PROJECT_OUTPUT_PATHS to True will cause the compiler to use the Android and HTML5 output folders
 that are defined in the AGK project file rather than the default release folders.
@@ -38,8 +38,8 @@ IGNORE_FILES = ['Thumbs.db']
 
 class Platform(IntFlag):
     """List of export platforms this module supports."""
-    WINDOWS = auto()  # Export for Windows.  Use architecture to set 32-bit, 64-bit, or both.
-    LINUX = auto()  # Export for Linux.  Use architecture to set 32-bit, 64-bit, or both.
+    WINDOWS = auto()  # Export for Windows.  Use architectures to set 32-bit, 64-bit, or both.
+    LINUX = auto()  # Export for Linux.  Use architectures to set 32-bit, 64-bit, or both.
     ANDROID = auto()  # Export as APK as the APK type set within the AGK project file.
     HTML5 = auto()  # Export as HTML5.
     GOOGLE_APK = auto()  # Export as Google Play APK.
@@ -49,7 +49,7 @@ class Platform(IntFlag):
 
 
 class Architecture(IntFlag):
-    """List of architextures for Linux and Windows exports."""
+    """List of architectures for Linux and Windows exports."""
     x86 = auto()  # 32-bit, the default flag if none are set.
     x64 = auto()  # 64-bit
 
@@ -179,14 +179,14 @@ class AgkProject(IniFile):
     def version(self, value: str):
         self._version = value
 
-    def get_release_folder(self, platform_name: str, architecture: Architecture = None):
+    def get_release_folder(self, platform_name: str, architectures: Architecture = None):
         """Returns the release folder for the given platform name."""
         release_folder = f"{self._name}" \
                          f"{'_' + self._release_name if self._release_name else ''}" \
                          f"{'_' + self._version if self._version else ''}" \
                          f"_{platform_name}"
-        if architecture is not None:
-            release_folder += '_x' + '_'.join([a.name[1:] for a in Architecture if architecture & a.value])
+        if architectures is not None:
+            release_folder += '_x' + '_'.join([a.name[1:] for a in Architecture if architectures & a.value])
         # Remove characters that aren't letters, numbers, or underscores.
         # release_folder = release_folder.replace(' ', '_')
         # release_folder = re.sub(r'[^A-Za-z0-9_]', '', release_folder)
@@ -1126,24 +1126,24 @@ class AgkCompiler:
             _rmtree(temp_folder)
         return output_folder
 
-    def export_linux(self, project: AgkProject, architecture: Architecture):
+    def export_linux(self, project: AgkProject, architectures: Architecture):
         """
         Exports the project for Linux.
 
         :param project: The project to export.
-        :param architecture: The OS architecture to export for.
+        :param architectures: The OS architectures to export for.
         :return: The path to the export folder.
         """
-        print(f'Exporting project for Linux: {str(architecture)}')
-        output_folder = project.get_release_folder("linux", architecture)
+        print(f'Exporting project for Linux: {str(architectures)}')
+        output_folder = project.get_release_folder("linux", architectures)
         _rmtree(output_folder)
         os.makedirs(output_folder)
         player_path = os.path.join(self._agk_path, "Players", "Linux")
         # Remove everything but letters, numbers and underscores.
         clean_name = re.sub(r'[^A-Za-z0-9_]', '', project.name)
-        if architecture & Architecture.x86:
+        if architectures & Architecture.x86:
             shutil.copyfile(os.path.join(player_path, "LinuxPlayer32"), os.path.join(output_folder, f"{clean_name}32"))
-        if architecture & Architecture.x64:
+        if architectures & Architecture.x64:
             shutil.copyfile(os.path.join(player_path, "LinuxPlayer64"), os.path.join(output_folder, f"{clean_name}64"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
@@ -1152,35 +1152,35 @@ class AgkCompiler:
                             ignore=shutil.ignore_patterns(*IGNORE_FILES, '*.dll', '*.dylib'))
         return output_folder
 
-    def export_windows(self, project: AgkProject, architecture: Architecture):
+    def export_windows(self, project: AgkProject, architectures: Architecture):
         """
         Exports the project for Windows.
 
         :param project: The project to export.
-        :param architecture: The OS architecture to export for.
+        :param architectures: The OS architectures to export for.
         :return: The path to the export folder.
         """
-        print(f'Exporting project for Windows: {str(architecture)}')
-        output_folder = project.get_release_folder('windows', architecture)
+        print(f'Exporting project for Windows: {str(architectures)}')
+        output_folder = project.get_release_folder('windows', architectures)
         _rmtree(output_folder)
         os.makedirs(output_folder, exist_ok=False)
         player_path = os.path.join(self._agk_path, "Players", "Windows")
         # Remove everything but letters, numbers and underscores.
-        if architecture & Architecture.x86:
+        if architectures & Architecture.x86:
             shutil.copyfile(os.path.join(player_path, "Windows.exe"),
                             os.path.join(output_folder, f"{project.name}.exe"))
-        if architecture & Architecture.x64:
+        if architectures & Architecture.x64:
             # Appends 64 if exporting both 32- and 64-bit.
             shutil.copyfile(os.path.join(player_path, "Windows64.exe"),
                             os.path.join(output_folder,
-                                         f"{project.name}{'64' if architecture & Architecture.x86 else ''}.exe"))
+                                         f"{project.name}{'64' if architectures & Architecture.x86 else ''}.exe"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
         if os.listdir('Plugins'):
             ignore_dlls = []
-            if not architecture & Architecture.x86:
+            if not architectures & Architecture.x86:
                 ignore_dlls.append('Windows.dll')
-            if not architecture & Architecture.x64:
+            if not architectures & Architecture.x64:
                 ignore_dlls.append('Windows64.dll')
             shutil.copytree(os.path.join(project.base_path, "Plugins"), os.path.join(output_folder, "Plugins"),
                             ignore=shutil.ignore_patterns(*IGNORE_FILES, '*.so', '*.dylib', *ignore_dlls))
@@ -1191,7 +1191,7 @@ class AgkBuild:
     def __init__(self,
                  project_file: str,
                  platforms: int,
-                 architecture: Architecture = Architecture.x86,
+                 architectures: Architecture = Architecture.x86,
                  project_name: str = None,
                  release_name: str = None,
                  include_tags: dict = None,
@@ -1215,7 +1215,7 @@ class AgkBuild:
 
         :param project_file: The AGK project file to open.
         :param platforms: Platform flags indicating how to export the project.
-        :param architecture: The architecture to export for.  Only used for Linux and Windows exports.
+        :param architectures: The architectures to export for.  Only used for Linux and Windows exports.
         :param project_name: Overrides the name found in the project file.  Useful for special version, ie: demos.
         :param release_name: When given, this is included in the release output folder and can be used to differentiate
             between multiple exports to the same platform.  It does not affect the project name.
@@ -1314,9 +1314,9 @@ class AgkBuild:
             compiler = AgkCompiler()
             compiler.compile(project)
             if platforms & Platform.WINDOWS:
-                post_export(compiler.export_windows(project, architecture))
+                post_export(compiler.export_windows(project, architectures))
             if platforms & Platform.LINUX:
-                post_export(compiler.export_linux(project, architecture))
+                post_export(compiler.export_linux(project, architectures))
             if platforms & Platform.ANDROID:
                 compiler.export_apk(project, **kwargs)
             if platforms & Platform.HTML5:
@@ -1353,7 +1353,7 @@ def _exec_build_tasks(filename):
     tasks = importlib.util.module_from_spec(spec)
     # Add these for use in the agkbuild file.
     tasks.AgkBuild = AgkBuild
-    # Allow platform and architecture flags to be used in the agkbuild file without the class name.
+    # Allow platform and architectures flags to be used in the agkbuild file without the class name.
     for p in Platform:
         tasks.__dict__[p.name] = p
     for a in Architecture:
