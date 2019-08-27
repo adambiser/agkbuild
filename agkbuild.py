@@ -20,14 +20,15 @@ https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c
 """
 import argparse
 from collections import OrderedDict
-from enum import IntFlag, auto
+import glob
+from enum import IntEnum, IntFlag, auto
 import os
 import PIL.Image as Image
 import platform
 import re
 import shutil
 import subprocess
-from typing import List
+from typing import List, Tuple
 import zipfile
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
@@ -38,9 +39,11 @@ IGNORE_FILES = ['Thumbs.db']
 
 class Platform(IntFlag):
     """List of export platforms this module supports."""
-    WINDOWS = auto()  # Export for Windows.  Use architectures to set 32-bit, 64-bit, or both.
-    LINUX = auto()  # Export for Linux.  Use architectures to set 32-bit, 64-bit, or both.
-    ANDROID = auto()  # Export as APK as the APK type set within the AGK project file.
+    WINDOWS_32 = auto()  # Export for 32-bit Windows.  Use architectures to set 32-bit, 64-bit, or both.
+    WINDOWS_64 = auto()  # Export for 64-bit Windows.  Use architectures to set 32-bit, 64-bit, or both.
+    LINUX_32 = auto()  # Export for 32-bit Linux.  Use architectures to set 32-bit, 64-bit, or both.
+    LINUX_64 = auto()  # Export for 64-bit Linux.  Use architectures to set 32-bit, 64-bit, or both.
+    # ANDROID = auto()  # Export as APK as the APK type set within the AGK project file.
     HTML5 = auto()  # Export as HTML5.
     GOOGLE_APK = auto()  # Export as Google Play APK.
     AMAZON_APK = auto()  # Export as Amazon APK.
@@ -48,10 +51,41 @@ class Platform(IntFlag):
     # MACOS = auto()  # Not supported.
 
 
-class Architecture(IntFlag):
+class _Architecture(IntFlag):
     """List of architectures for Linux and Windows exports."""
     x86 = auto()  # 32-bit, the default flag if none are set.
     x64 = auto()  # 64-bit
+
+
+class Permission(IntFlag):
+    AGK_ANDROID_PERMISSION_WRITE = 0x001
+    AGK_ANDROID_PERMISSION_INTERNET = 0x002
+    AGK_ANDROID_PERMISSION_WAKE = 0x004
+    AGK_ANDROID_PERMISSION_GPS = 0x008
+    AGK_ANDROID_PERMISSION_IAP = 0x010
+    AGK_ANDROID_PERMISSION_EXPANSION = 0x020
+    AGK_ANDROID_PERMISSION_LOCATION = 0x040
+    AGK_ANDROID_PERMISSION_PUSH = 0x080
+    AGK_ANDROID_PERMISSION_CAMERA = 0x100
+    AGK_ANDROID_PERMISSION_VIBRATE = 0x200
+    AGK_ANDROID_PERMISSION_RECORD_AUDIO = 0x400
+
+
+class ArCoreMode(IntEnum):
+    ARCORE_NONE = 0
+    ARCORE_OPTIONAL = 1
+    ARCORE_REQUIRED = 2
+
+
+class Html5Commands(IntEnum):
+    HTML5_COMMANDS_2D_ONLY = 0
+    HTML5_COMMANDS_2D_AND_3D = 1
+
+
+class Orientation(IntEnum):
+    ORIENTATION_LANDSCAPE = 6
+    ORIENTATION_PORTRAIT = 7
+    ORIENTATION_ALL = 10
 
 
 def _rmtree(folder):
@@ -179,14 +213,14 @@ class AgkProject(IniFile):
     def version(self, value: str):
         self._version = value
 
-    def get_release_folder(self, platform_name: str, architectures: Architecture = None):
+    def get_release_folder(self, platform_name: str, architectures: _Architecture = None):
         """Returns the release folder for the given platform name."""
         release_folder = f"{self._name}" \
                          f"{'_' + self._release_name if self._release_name else ''}" \
                          f"{'_' + self._version if self._version else ''}" \
                          f"_{platform_name}"
         if architectures is not None:
-            release_folder += '_x' + '_'.join([a.name[1:] for a in Architecture if architectures & a.value])
+            release_folder += '_x' + '_'.join([a.name[1:] for a in _Architecture if architectures & a.value])
         # Remove characters that aren't letters, numbers, or underscores.
         # release_folder = release_folder.replace(' ', '_')
         # release_folder = re.sub(r'[^A-Za-z0-9_]', '', release_folder)
@@ -201,14 +235,10 @@ class AgkCompiler:
 
     APK_TYPE_NAMES = ['Google', 'Amazon', 'Ouya']
 
-    ORIENTATION_LANDSCAPE = 6
-    ORIENTATION_PORTRAIT = 7
-    ORIENTATION_ALL = 10
-
     ORIENTATION_NAMES = {
-        ORIENTATION_LANDSCAPE: 'sensorLandscape',
-        ORIENTATION_PORTRAIT: 'sensorPortrait',
-        ORIENTATION_ALL: 'fullSensor',
+        Orientation.ORIENTATION_LANDSCAPE: 'sensorLandscape',
+        Orientation.ORIENTATION_PORTRAIT: 'sensorPortrait',
+        Orientation.ORIENTATION_ALL: 'fullSensor',
     }
 
     ANDROID_JAR = 'android28.jar'
@@ -229,31 +259,12 @@ class AgkCompiler:
         {'version': '9.0', 'api': 28},
     ]
 
-    AGK_ANDROID_PERMISSION_WRITE = 0x001
-    AGK_ANDROID_PERMISSION_INTERNET = 0x002
-    AGK_ANDROID_PERMISSION_WAKE = 0x004
-    AGK_ANDROID_PERMISSION_GPS = 0x008
-    AGK_ANDROID_PERMISSION_IAP = 0x010
-    AGK_ANDROID_PERMISSION_EXPANSION = 0x020
-    AGK_ANDROID_PERMISSION_LOCATION = 0x040
-    AGK_ANDROID_PERMISSION_PUSH = 0x080
-    AGK_ANDROID_PERMISSION_CAMERA = 0x100
-    AGK_ANDROID_PERMISSION_VIBRATE = 0x200
-    AGK_ANDROID_PERMISSION_RECORD_AUDIO = 0x400
-
-    ARCORE_NONE = 0
-    ARCORE_OPTIONAL = 1
-    ARCORE_REQUIRED = 2
-
-    HTML5_COMMANDS_2D_ONLY = 0
-    HTML5_COMMANDS_2D_AND_3D = 1
-
     HTML5_COMMANDS_FOLDER = {
-        HTML5_COMMANDS_2D_ONLY: {
+        Html5Commands.HTML5_COMMANDS_2D_ONLY: {
             True: '2Ddynamic',
             False: '2D',
         },
-        HTML5_COMMANDS_2D_AND_3D: {
+        Html5Commands.HTML5_COMMANDS_2D_AND_3D: {
             True: '3Ddynamic',
             False: '3D',
         }
@@ -320,18 +331,19 @@ class AgkCompiler:
         if completed_process.returncode != 0:
             raise SystemError(f'AppGameKit compilation error:\nReturn code: {completed_process.returncode}')
 
-    def export_apk(self, project: AgkProject, **kwargs):  # app_type: int = None, package_name: str = None):
+    def export_apk(self, project: AgkProject, app_type, **kwargs):  # app_type: int = None, package_name: str = None):
         """
         Exports the project to an Android AGK file.
 
         :param project: The project to export.
+        :param app_type: The APK app type: Google Play, Amazon, or Ouya.
         :param kwargs: Used to override various APK settings.  These args have a 'apk_' prefix.
         :return: Path to the generated APK file.
         """
         def get_value(name):
             return kwargs.get(f'apk_{name}', project['apk_settings', name])
 
-        app_type = int(get_value('app_type'))
+        # app_type = int(get_value('app_type'))
         print(f'Exporting project as {AgkCompiler.APK_TYPE_NAMES[app_type]} APK')
         app_name = get_value('app_name')
         package_name = get_value('package_name')
@@ -339,15 +351,23 @@ class AgkCompiler:
         notif_icon = get_value('notif_icon_path')
         ouya_icon = get_value('ouya_icon_path')
         firebase_config = get_value('firebase_config_path')
-        orientation = int(get_value('orientation'))
-        try:
-            orientation = [AgkCompiler.ORIENTATION_LANDSCAPE,
-                           AgkCompiler.ORIENTATION_PORTRAIT,
-                           AgkCompiler.ORIENTATION_ALL][orientation]
-        except IndexError:
-            orientation = AgkCompiler.ORIENTATION_ALL
-        arcore_mode = int(get_value('arcore'))
-        app_sdk = AgkCompiler.SDK_VERSIONS[int(get_value('sdk_version'))]['api']
+        orientation = kwargs.get('apk_orientation')
+        if orientation:
+            orientation = Orientation(orientation)
+        else:
+            orientation = int(project['apk_settings', 'orientation'])
+            orientation = [Orientation.ORIENTATION_LANDSCAPE,
+                           Orientation.ORIENTATION_PORTRAIT,
+                           Orientation.ORIENTATION_ALL][orientation]
+        arcore_mode = ArCoreMode(int(get_value('arcore')))
+        app_sdk = kwargs.get('apk_sdk_version')
+        if app_sdk:
+            app_sdk = next((sdk['api'] for sdk in AgkCompiler.SDK_VERSIONS
+                            if sdk and sdk['version'] == kwargs.get('apk_sdk_version')), None)
+            if not app_sdk:
+                raise ValueError("Unexpected SDK version.")
+        else:
+            app_sdk = AgkCompiler.SDK_VERSIONS[int(project['apk_settings', 'sdk_version'])]['api']
         if not app_sdk:
             raise ValueError("Invalid sdk_version.")
         url_scheme = get_value('url_scheme')
@@ -355,7 +375,7 @@ class AgkCompiler:
         google_play_app_id = get_value('play_app_id')
         admob_app_id = get_value('admob_app_id')
         # permissions
-        permission_flags = int(get_value('permission_flags'))
+        permission_flags = Permission(int(get_value('permission_flags')))
         # signing
         # keystore_path = None
         # version_name = None
@@ -373,17 +393,17 @@ class AgkCompiler:
                     f"{project.name}-%[type]-%[version].apk")
 
         # permissions
-        permission_external_storage = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_WRITE)
-        permission_location_fine = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_GPS)
-        permission_location_coarse = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_LOCATION)
-        permission_internet = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_INTERNET)
-        permission_wake = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_WAKE)
-        permission_billing = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_IAP)
-        permission_push = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_PUSH)
-        permission_camera = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_CAMERA)
-        permission_expansion = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_EXPANSION)
-        permission_vibrate = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_VIBRATE)
-        permission_record_audio = bool(permission_flags & AgkCompiler.AGK_ANDROID_PERMISSION_RECORD_AUDIO)
+        permission_external_storage = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_WRITE)
+        permission_location_fine = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_GPS)
+        permission_location_coarse = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_LOCATION)
+        permission_internet = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_INTERNET)
+        permission_wake = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_WAKE)
+        permission_billing = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_IAP)
+        permission_push = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_PUSH)
+        permission_camera = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_CAMERA)
+        permission_expansion = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_EXPANSION)
+        permission_vibrate = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_VIBRATE)
+        permission_record_audio = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_RECORD_AUDIO)
 
         # START CHECKS
         if not output_file:
@@ -551,7 +571,7 @@ class AgkCompiler:
                 new_contents += '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
 
             # if ARCore required
-            if arcore_mode == AgkCompiler.ARCORE_REQUIRED:
+            if arcore_mode == ArCoreMode.ARCORE_REQUIRED:
                 new_contents += '    <uses-feature android:name="android.hardware.camera.ar" android:required="true" />'
 
             # replace orientation
@@ -695,10 +715,10 @@ class AgkCompiler:
                 android:initOrder="100" />'''
 
             # arcore activity
-            if arcore_mode != AgkCompiler.ARCORE_NONE:
+            if arcore_mode != ArCoreMode.ARCORE_NONE:
                 new_contents += f'''
         <meta-data android:name="com.google.ar.core" android:value="{
-            'optional' if arcore_mode == AgkCompiler.ARCORE_OPTIONAL else 'required'}" />
+            'optional' if arcore_mode == ArCoreMode.ARCORE_OPTIONAL else 'required'}" />
         <meta-data android:name="com.google.ar.core.min_apk_version" android:value="190519000" />
         <activity
             android:name="com.google.ar.core.InstallActivity"
@@ -947,7 +967,7 @@ class AgkCompiler:
                 zfp.write(os.path.join(android_folder, "lib", "x86", "libandroid_player.so"),
                           "lib/x86/libandroid_player.so")
 
-                if arcore_mode != AgkCompiler.ARCORE_NONE:
+                if arcore_mode != ArCoreMode.ARCORE_NONE:
                     # use real ARCore lib
                     zfp.write(os.path.join(android_folder, "lib", "arm64-v8a", "libarcore_sdk.so"),
                               "lib/arm64-v8a/libarcore_sdk.so")
@@ -1014,7 +1034,7 @@ class AgkCompiler:
             return kwargs.get(f'html5_{name}', project['html5_settings', name])
 
         print('Exporting project as HTML5')
-        commands_used = int(get_value('commands_used'))
+        commands_used = Html5Commands(int(get_value('commands_used')))
         dynamic_memory = bool(get_value('dynamic_memory'))
         if USE_DEFINED_PROJECT_OUTPUT_PATHS:
             output_folder = project['html5_settings', 'output_path']  # Called output_file in the C++ code.
@@ -1024,7 +1044,7 @@ class AgkCompiler:
         # START CHECKS
         if not output_folder:
             raise ValueError('You must choose an output location to save your HTML5 files.')
-        if commands_used not in [AgkCompiler.HTML5_COMMANDS_2D_ONLY, AgkCompiler.HTML5_COMMANDS_2D_AND_3D]:
+        if commands_used not in [Html5Commands.HTML5_COMMANDS_2D_ONLY, Html5Commands.HTML5_COMMANDS_2D_AND_3D]:
             raise ValueError("Unrecognised choice for 'commands used'.")
 
         # CHECKS COMPLETE, START EXPORT
@@ -1126,7 +1146,7 @@ class AgkCompiler:
             _rmtree(temp_folder)
         return output_folder
 
-    def export_linux(self, project: AgkProject, architectures: Architecture):
+    def export_linux(self, project: AgkProject, architectures: _Architecture):
         """
         Exports the project for Linux.
 
@@ -1141,9 +1161,9 @@ class AgkCompiler:
         player_path = os.path.join(self._agk_path, "Players", "Linux")
         # Remove everything but letters, numbers and underscores.
         clean_name = re.sub(r'[^A-Za-z0-9_]', '', project.name)
-        if architectures & Architecture.x86:
+        if architectures & _Architecture.x86:
             shutil.copyfile(os.path.join(player_path, "LinuxPlayer32"), os.path.join(output_folder, f"{clean_name}32"))
-        if architectures & Architecture.x64:
+        if architectures & _Architecture.x64:
             shutil.copyfile(os.path.join(player_path, "LinuxPlayer64"), os.path.join(output_folder, f"{clean_name}64"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
@@ -1152,7 +1172,7 @@ class AgkCompiler:
                             ignore=shutil.ignore_patterns(*IGNORE_FILES, '*.dll', '*.dylib'))
         return output_folder
 
-    def export_windows(self, project: AgkProject, architectures: Architecture):
+    def export_windows(self, project: AgkProject, architectures: _Architecture):
         """
         Exports the project for Windows.
 
@@ -1166,21 +1186,21 @@ class AgkCompiler:
         os.makedirs(output_folder, exist_ok=False)
         player_path = os.path.join(self._agk_path, "Players", "Windows")
         # Remove everything but letters, numbers and underscores.
-        if architectures & Architecture.x86:
+        if architectures & _Architecture.x86:
             shutil.copyfile(os.path.join(player_path, "Windows.exe"),
                             os.path.join(output_folder, f"{project.name}.exe"))
-        if architectures & Architecture.x64:
+        if architectures & _Architecture.x64:
             # Appends 64 if exporting both 32- and 64-bit.
             shutil.copyfile(os.path.join(player_path, "Windows64.exe"),
                             os.path.join(output_folder,
-                                         f"{project.name}{'64' if architectures & Architecture.x86 else ''}.exe"))
+                                         f"{project.name}{'64' if architectures & _Architecture.x86 else ''}.exe"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
         if os.listdir('Plugins'):
             ignore_dlls = []
-            if not architectures & Architecture.x86:
+            if not architectures & _Architecture.x86:
                 ignore_dlls.append('Windows.dll')
-            if not architectures & Architecture.x64:
+            if not architectures & _Architecture.x64:
                 ignore_dlls.append('Windows64.dll')
             shutil.copytree(os.path.join(project.base_path, "Plugins"), os.path.join(output_folder, "Plugins"),
                             ignore=shutil.ignore_patterns(*IGNORE_FILES, '*.so', '*.dylib', *ignore_dlls))
@@ -1191,11 +1211,11 @@ class AgkBuild:
     def __init__(self,
                  project_file: str,
                  platforms: int,
-                 architectures: Architecture = Architecture.x86,
+                 # architectures: Architecture = Architecture.x86,
                  project_name: str = None,
                  release_name: str = None,
                  include_tags: dict = None,
-                 include_files: List[str] = None,
+                 include_files: List[Tuple[str, str]] = None,
                  exclude_media: List[str] = None,
                  archive_output: bool = False,
                  **kwargs):
@@ -1221,9 +1241,9 @@ class AgkBuild:
             between multiple exports to the same platform.  It does not affect the project name.
         :param include_tags: The dictionary of include tags and include files.
         :param include_files: List of extra files to include in the release folders.
-            The list can be a mixture of strings that are paths relative to the project folder which get copied relative
-            to the output folder, or tuples where the first item is an absolute path or a path relative to the project
-            folder and the second item is the path it is copied to relative to the output folder.
+            This is a list of tuples where each tuple has two values, the first value is the path to the file on the
+            system now (relative to the project folder) and the second value is the folder name for the file within the
+            release folder.
             This parameter has no affect on Android exports.
         :param exclude_media: List of file paths relative to the 'media' folder to be excluded when building.  The files
             are moved into 'media_exclude' while building and exported and moved back into 'media' when finished.
@@ -1284,19 +1304,16 @@ class AgkBuild:
                 if include_files:
                     # Copy include files into the output folder.
                     for item in include_files:
-                        try:
-                            src, dst = item
-                        except (TypeError, ValueError):
-                            src = item
-                            dst = src
+                        src, dst = item
                         if os.path.isabs(dst):
                             raise ValueError("An include_file destination must be relative to the output folder.")
                         if ".." in dst:
                             raise ValueError("An include_file destination must stay within the output folder.")
-                        # src = os.path.abspath(src)
                         dst = os.path.join(output_folder, dst)
-                        os.makedirs(os.path.split(dst)[0], exist_ok=True)
-                        shutil.copyfile(src, dst)
+                        os.makedirs(dst, exist_ok=True)
+                        # noinspection PyShadowingNames
+                        for filename in glob.glob(src):
+                            shutil.copy(filename, dst)
                 if archive_output:
                     # Zip up each output folder.
                     with zipfile.ZipFile(f"{output_folder}.zip", 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
@@ -1310,23 +1327,33 @@ class AgkBuild:
                                 zfp.write(filename, os.path.relpath(filename, output_folder))
                     _rmtree(output_folder)
 
+            def get_architectures(x86_flag, x64_flag):
+                return (_Architecture.x86 if x86_flag else 0) | (_Architecture.x64 if x64_flag else 0)
+
             # Now compile and export.
             compiler = AgkCompiler()
             compiler.compile(project)
-            if platforms & Platform.WINDOWS:
+            if platforms & (Platform.WINDOWS_32 | Platform.WINDOWS_64):
+                # architectures = _Architecture.x86 if platforms & Platform.WINDOWS_32 else 0
+                architectures = _Architecture(sum([2**item[0] for item in
+                                                   enumerate([Platform.WINDOWS_32, Platform.WINDOWS_64])
+                                                   if platforms & item[1]]))
                 post_export(compiler.export_windows(project, architectures))
-            if platforms & Platform.LINUX:
+            if platforms & (Platform.LINUX_32 | Platform.LINUX_64):
+                architectures = _Architecture(sum([2**item[0] for item in
+                                                   enumerate([Platform.LINUX_32, Platform.LINUX_64])
+                                                   if platforms & item[1]]))
                 post_export(compiler.export_linux(project, architectures))
-            if platforms & Platform.ANDROID:
-                compiler.export_apk(project, **kwargs)
+            # if platforms & Platform.ANDROID:
+            #     compiler.export_apk(project, **kwargs)
             if platforms & Platform.HTML5:
                 post_export(compiler.export_html5(project))
             if platforms & Platform.GOOGLE_APK:
-                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
+                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
             if platforms & Platform.AMAZON_APK:
-                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
+                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
             if platforms & Platform.OUYA_APK:
-                compiler.export_apk(project, apk_app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
+                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
         finally:
             os.replace(backup_code_file, main_code_file)
             # Restore exclude media files back into the media folder.
@@ -1353,11 +1380,14 @@ def _exec_build_tasks(filename):
     tasks = importlib.util.module_from_spec(spec)
     # Add these for use in the agkbuild file.
     tasks.AgkBuild = AgkBuild
-    # Allow platform and architectures flags to be used in the agkbuild file without the class name.
-    for p in Platform:
-        tasks.__dict__[p.name] = p
-    for a in Architecture:
-        tasks.__dict__[a.name] = a
+    # Allow flags and values to be used in the agkbuild file without the class name.
+    for v in [v for e in [Platform,
+                          # Architecture,
+                          Permission,
+                          Orientation,
+                          ArCoreMode,
+                          Html5Commands] for v in e]:
+        tasks.__dict__[v.name] = v
     # Run the exporter.  This is not a "safe" operation since the agkbuild file runs as Python code.
     spec.loader.exec_module(tasks)
 

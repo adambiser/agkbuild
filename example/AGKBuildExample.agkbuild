@@ -6,9 +6,10 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
          exclude_media=DEMO_FILES,
-         include_files=[('README.txt', 'READTHIS.txt')],
-         platforms=WINDOWS | LINUX | GOOGLE_APK | AMAZON_APK | HTML5,
-         architectures=x86 | x64,
+         include_files=[('README.txt', '.'),
+                        ('help\*.*', 'help')],
+         apk_sdk_version="5.0",
+         platforms=WINDOWS_32 | WINDOWS_64 | LINUX_32 | LINUX_64 | GOOGLE_APK | AMAZON_APK | HTML5,
          )
 
 # This is the full version release for Steam.
@@ -17,8 +18,7 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-on.agc"},
          exclude_media=DEMO_FILES,
-         platforms=WINDOWS,
-         architectures=x86,
+         platforms=WINDOWS_32,
          )
 
 # This is the demo release.
@@ -29,7 +29,6 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
          exclude_media=FULL_FILES,
-         platforms=WINDOWS | LINUX | GOOGLE_APK | AMAZON_APK | HTML5,
-         architectures=x86,
+         platforms=WINDOWS_32 | LINUX_32,
          archive_output=True,
          )
