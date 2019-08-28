@@ -76,6 +76,7 @@ class _Architecture(IntFlag):
     def __str__(self):
         return 'x' + '_'.join([a.name[1:] for a in _Architecture if self & a.value])
 
+
 class Permission(IntFlag):
     AGK_ANDROID_PERMISSION_WRITE = 0x001
     AGK_ANDROID_PERMISSION_INTERNET = 0x002
@@ -1388,30 +1389,30 @@ class AgkBuild:
                     os.rename(src_file, dst_file)
             _rmtree(media_exclude_path)
 
-    def archive(self, platforms):
+    def archive(self, p):
         """
-        Archives the release folders into ZIP files for the given platform flags.
-        The release folder will then be removed.
-        """
-        def _archive(platform_flags: Platform):
-            release_path = self.release_paths[platform_flags]
-            with zipfile.ZipFile(f"{release_path}.zip", 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
-                # noinspection PyShadowingNames
-                for root, dirs, files in os.walk(release_path):
-                    # noinspection PyShadowingNames
-                    for dirname in [os.path.join(root, dirname) for dirname in dirs]:
-                        zfp.write(dirname, os.path.relpath(dirname, release_path))
-                    # noinspection PyShadowingNames
-                    for filename in [os.path.join(root, filename) for filename in files]:
-                        zfp.write(filename, os.path.relpath(filename, release_path))
-            _rmtree(release_path)
+        Archives a platform's release folder into a zip file.
+        The release folder will then be removed and the release_path for the platform will be the zip file path.
 
-        if platforms & (Platform.WINDOWS_86 | Platform.WINDOWS_64):
-            _archive(platforms & (Platform.WINDOWS_86 | Platform.WINDOWS_64))
-        if platforms & (Platform.LINUX_86 | Platform.LINUX_64):
-            _archive(platforms & (Platform.LINUX_86 | Platform.LINUX_64))
-        if platforms & Platform.HTML5:
-            _archive(Platform.HTML5)
+        :param p: The platform flag.
+        """
+        if p in [Platform.GOOGLE_APK, Platform.AMAZON_APK, Platform.OUYA_APK]:
+            raise ValueError("Android APK releases are already archives.")
+
+        release_path = self.release_paths[p]
+        zip_path = f"{release_path}.zip"
+        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
+            # noinspection PyShadowingNames
+            for root, dirs, files in os.walk(release_path):
+                # noinspection PyShadowingNames
+                for dirname in [os.path.join(root, dirname) for dirname in dirs]:
+                    zfp.write(dirname, os.path.relpath(dirname, release_path))
+                # noinspection PyShadowingNames
+                for filename in [os.path.join(root, filename) for filename in files]:
+                    zfp.write(filename, os.path.relpath(filename, release_path))
+        _rmtree(release_path)
+        # Update the release path.
+        self.release_paths[p] = zip_path
 
 
 def _exec_build_tasks(filename):
