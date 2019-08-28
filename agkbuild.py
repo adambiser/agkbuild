@@ -27,6 +27,7 @@ import PIL.Image as Image
 import platform
 import re
 import shutil
+from stat import S_IWRITE
 import subprocess
 from typing import List, Tuple
 import zipfile
@@ -41,10 +42,12 @@ IGNORE_FILES = ['Thumbs.db']
 
 class Platform(IntFlag):
     """List of export platforms this module supports."""
-    WINDOWS_32 = auto()  # Export for 32-bit Windows.
+    WINDOWS_86 = auto()  # Export for 32-bit Windows.
     WINDOWS_64 = auto()  # Export for 64-bit Windows.
-    LINUX_32 = auto()  # Export for 32-bit Linux.
+    WINDOWS_86_64 = auto()  # Exports both 32- and 64-bit Windows in the same release folder.
+    LINUX_86 = auto()  # Export for 32-bit Linux.
     LINUX_64 = auto()  # Export for 64-bit Linux.
+    LINUX_86_64 = auto()  # Exports both 32- and 64-bit Windows in the same release folder.
     # ANDROID = auto()  # Export as APK using the APK type set within the AGK project file.
     HTML5 = auto()  # Export as HTML5.
     GOOGLE_APK = auto()  # Export as Google Play APK.
@@ -59,16 +62,19 @@ class _Architecture(IntFlag):
     x64 = auto()  # 64-bit
 
     @classmethod
-    def get_architectures(cls, platforms: Platform, x86_flag, x64_flag):
-        return (_Architecture.x86 if x86_flag else 0) | (_Architecture.x64 if x64_flag else 0)
-
-    @classmethod
-    def get_platform_flags(cls, platforms: Platform, *flags):
-        return cls(sum([2 ** item[0] for item in enumerate(flags) if platforms & item[1]]))
+    def from_platform(cls, p: Platform):
+        _PLATFORMS_TO_ARCHITECTURES = {
+            Platform.WINDOWS_86: cls.x86,
+            Platform.WINDOWS_64: cls.x64,
+            Platform.WINDOWS_86_64: cls.x86 | cls.x64,
+            Platform.LINUX_86: cls.x86,
+            Platform.LINUX_64: cls.x64,
+            Platform.LINUX_86_64: cls.x86 | cls.x64,
+        }
+        return _PLATFORMS_TO_ARCHITECTURES[p]
 
     def __str__(self):
         return 'x' + '_'.join([a.name[1:] for a in _Architecture if self & a.value])
-
 
 class Permission(IntFlag):
     AGK_ANDROID_PERMISSION_WRITE = 0x001
@@ -107,6 +113,9 @@ def _rmtree(folder):
     def _onerror(func, path, exc_info):
         if exc_info[0] == FileNotFoundError and os.path.abspath(path) == os.path.abspath(folder):
             pass
+        elif exc_info[0] == PermissionError and not os.access(path, os.W_OK):
+            os.chmod(path, S_IWRITE)
+            func(path)
         else:
             raise
     shutil.rmtree(folder, onerror=_onerror)
@@ -1228,10 +1237,10 @@ class AgkBuild:
                  # architectures: Architecture = Architecture.x86,
                  project_name: str = None,
                  release_name: str = None,
+                 constants: dict = None,
                  include_tags: dict = None,
                  include_files: List[Tuple[str, str]] = None,
                  exclude_media: List[str] = None,
-                 archive_output: bool = False,
                  **kwargs):
         """
         Creating an instance of this class compiles a project for the specified platforms.
@@ -1253,6 +1262,7 @@ class AgkBuild:
         :param project_name: Overrides the name found in the project file.  Useful for special version, ie: demos.
         :param release_name: When given, this is included in the release output folder and can be used to differentiate
             between multiple exports to the same platform.  It does not affect the project name.
+        :param constants: A dictionary of constant values for the script to set in main.agc.
         :param include_tags: The dictionary of include tags and include files.
         :param include_files: List of extra files to include in the release folders.
             This is a list of tuples where each tuple has two values, the first value is the path to the file on the
@@ -1278,6 +1288,8 @@ class AgkBuild:
 
         print("")  # blank line for cleaner sysout.
         project = AgkProject(project_file)
+        self.project = project
+        self.version = project.version
         main_code_file = os.path.join(project.base_path, "main.agc")
         backup_code_file = os.path.join(project.base_path, "main.agc.backup")
         os.rename(main_code_file, backup_code_file)
@@ -1286,7 +1298,7 @@ class AgkBuild:
             with open(backup_code_file, 'r') as rfp:
                 with open(main_code_file, 'w') as wfp:
                     for line in rfp:
-                        match = re.match(r'(#include|#insert)\s+(?:".+"|\'.+\')\s+//\s*@@(\w+)', line)
+                        match = re.match(r'(#include|#insert)\s*(?:".+"|\'.+\')\s*//\s*@@(\w+)', line)
                         if match:
                             include_type = match.group(1)
                             name = match.group(2)
@@ -1295,9 +1307,14 @@ class AgkBuild:
                                                  "but none were given.")
                             if name not in include_tags:
                                 raise ValueError(f"No value given for include tag named '{name}'.")
-                            wfp.write(f'{include_type} "{include_tags[name]}"\n')
-                        else:
-                            wfp.write(line)
+                            line = f'{include_type} "{include_tags[name]}"\n'
+                        elif constants:
+                            match = re.match(r'#constant\s+(\w+)', line)
+                            if match:
+                                name = match.group(1)
+                                if name in constants:
+                                    line = f'#constant {name} {constants[name]}\n'
+                        wfp.write(line)
 
             # Store the exclude media files in the media_exclude folder.
             if exclude_media:
@@ -1316,7 +1333,7 @@ class AgkBuild:
                 project.release_name = release_name
 
             # Set up a function to be called on each output folder.
-            def post_export(output_folder):
+            def copy_include_files(output_folder):
                 if include_files:
                     # Copy include files into the output folder.
                     for item in include_files:
@@ -1330,35 +1347,23 @@ class AgkBuild:
                         # noinspection PyShadowingNames
                         for filename in glob.glob(src):
                             shutil.copy(filename, dst)
-                if archive_output:
-                    # Zip up each output folder.
-                    zip_path = f"{output_folder}.zip"
-                    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
-                        # noinspection PyShadowingNames
-                        for root, dirs, files in os.walk(output_folder):
-                            # noinspection PyShadowingNames
-                            for dirname in [os.path.join(root, dirname) for dirname in dirs]:
-                                zfp.write(dirname, os.path.relpath(dirname, output_folder))
-                            # noinspection PyShadowingNames
-                            for filename in [os.path.join(root, filename) for filename in files]:
-                                zfp.write(filename, os.path.relpath(filename, output_folder))
-                    _rmtree(output_folder)
-                    return zip_path
-                return output_folder
 
             # Now compile and export.
             compiler = AgkCompiler()
             compiler.compile(project)
-            if platforms & (Platform.WINDOWS_32 | Platform.WINDOWS_64):
-                architectures = _Architecture.get_platform_flags(platforms, Platform.WINDOWS_32, Platform.WINDOWS_64)
-                release_path = post_export(compiler.export_windows(project, architectures))
-                self.release_paths[platforms & (Platform.WINDOWS_32 | Platform.WINDOWS_64)] = release_path
-            if platforms & (Platform.LINUX_32 | Platform.LINUX_64):
-                architectures = _Architecture.get_platform_flags(platforms, Platform.LINUX_32, Platform.LINUX_64)
-                release_path = post_export(compiler.export_linux(project, architectures))
-                self.release_paths[platforms & (Platform.LINUX_32 | Platform.LINUX_64)] = release_path
+            for p in [platforms.WINDOWS_86, Platform.WINDOWS_64, Platform.WINDOWS_86_64]:
+                if platforms & p:
+                    release_path = compiler.export_windows(project, _Architecture.from_platform(p))
+                    copy_include_files(release_path)
+                    self.release_paths[p] = release_path
+            for p in [platforms.LINUX_86, Platform.LINUX_64, Platform.LINUX_86_64]:
+                if platforms & p:
+                    release_path = compiler.export_linux(project, _Architecture.from_platform(p))
+                    copy_include_files(release_path)
+                    self.release_paths[p] = release_path
             if platforms & Platform.HTML5:
-                release_path = post_export(compiler.export_html5(project))
+                release_path = compiler.export_html5(project)
+                copy_include_files(release_path)
                 self.release_paths[Platform.HTML5] = release_path
             if platforms & Platform.GOOGLE_APK:
                 release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
@@ -1382,6 +1387,31 @@ class AgkBuild:
                                                                                         start=media_exclude_path))
                     os.rename(src_file, dst_file)
             _rmtree(media_exclude_path)
+
+    def archive(self, platforms):
+        """
+        Archives the release folders into ZIP files for the given platform flags.
+        The release folder will then be removed.
+        """
+        def _archive(platform_flags: Platform):
+            release_path = self.release_paths[platform_flags]
+            with zipfile.ZipFile(f"{release_path}.zip", 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
+                # noinspection PyShadowingNames
+                for root, dirs, files in os.walk(release_path):
+                    # noinspection PyShadowingNames
+                    for dirname in [os.path.join(root, dirname) for dirname in dirs]:
+                        zfp.write(dirname, os.path.relpath(dirname, release_path))
+                    # noinspection PyShadowingNames
+                    for filename in [os.path.join(root, filename) for filename in files]:
+                        zfp.write(filename, os.path.relpath(filename, release_path))
+            _rmtree(release_path)
+
+        if platforms & (Platform.WINDOWS_86 | Platform.WINDOWS_64):
+            _archive(platforms & (Platform.WINDOWS_86 | Platform.WINDOWS_64))
+        if platforms & (Platform.LINUX_86 | Platform.LINUX_64):
+            _archive(platforms & (Platform.LINUX_86 | Platform.LINUX_64))
+        if platforms & Platform.HTML5:
+            _archive(Platform.HTML5)
 
 
 def _exec_build_tasks(filename):

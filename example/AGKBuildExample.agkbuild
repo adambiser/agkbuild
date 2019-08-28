@@ -15,7 +15,7 @@ info = AgkBuild(project_file='AGKBuildExample.agk',
                 apk_sdk_version="5.0",
                 apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
                 apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
-                platforms=WINDOWS_32 | WINDOWS_64 | LINUX_32 | LINUX_64 | GOOGLE_APK | AMAZON_APK | HTML5,
+                platforms=WINDOWS_86 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
                 )
 # The AgkBuild object has a release_paths attribute that can be used to determine where a release was built and perform
 # additional tasks on it.
@@ -27,7 +27,7 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-on.agc"},
          exclude_media=DEMO_MEDIA_FILES,
-         platforms=WINDOWS_32,
+         platforms=WINDOWS_86,
          )
 
 # This is the demo release.
@@ -38,6 +38,6 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
          exclude_media=FULL_MEDIA_FILES,
-         platforms=WINDOWS_32 | LINUX_32,
+         platforms=WINDOWS_86 | LINUX_86,
          archive_output=True,
          )
