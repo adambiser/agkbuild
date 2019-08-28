@@ -1295,7 +1295,7 @@ class AgkBuild:
                                                  "but none were given.")
                             if name not in include_tags:
                                 raise ValueError(f"No value given for include tag named '{name}'.")
-                            wfp.write(f'{include_type} "{include_tags[name]}"')
+                            wfp.write(f'{include_type} "{include_tags[name]}"\n')
                         else:
                             wfp.write(line)
 
