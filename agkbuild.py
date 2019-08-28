@@ -10,7 +10,7 @@ This will scan the project's main.agc file for a constant called VERSION to use 
 Exporting Android APKs differs from the other export options because it produces a single file rather than a folder.
 These are already archives
 
-Release folders use the following naming format: project_name[_release_name][_version]_platform[_architectures].
+Release folders use the following naming format: project_name[_release_name][_version]_platform.
 
 Setting USE_DEFINED_PROJECT_OUTPUT_PATHS to True will cause the compiler to use the Android and HTML5 output folders
 that are defined in the AGK project file rather than the default release folders.
@@ -31,6 +31,8 @@ import subprocess
 from typing import List, Tuple
 import zipfile
 
+__version__ = "0.1"
+
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
 # Always ignore these files.
@@ -39,11 +41,11 @@ IGNORE_FILES = ['Thumbs.db']
 
 class Platform(IntFlag):
     """List of export platforms this module supports."""
-    WINDOWS_32 = auto()  # Export for 32-bit Windows.  Use architectures to set 32-bit, 64-bit, or both.
-    WINDOWS_64 = auto()  # Export for 64-bit Windows.  Use architectures to set 32-bit, 64-bit, or both.
-    LINUX_32 = auto()  # Export for 32-bit Linux.  Use architectures to set 32-bit, 64-bit, or both.
-    LINUX_64 = auto()  # Export for 64-bit Linux.  Use architectures to set 32-bit, 64-bit, or both.
-    # ANDROID = auto()  # Export as APK as the APK type set within the AGK project file.
+    WINDOWS_32 = auto()  # Export for 32-bit Windows.
+    WINDOWS_64 = auto()  # Export for 64-bit Windows.
+    LINUX_32 = auto()  # Export for 32-bit Linux.
+    LINUX_64 = auto()  # Export for 64-bit Linux.
+    # ANDROID = auto()  # Export as APK using the APK type set within the AGK project file.
     HTML5 = auto()  # Export as HTML5.
     GOOGLE_APK = auto()  # Export as Google Play APK.
     AMAZON_APK = auto()  # Export as Amazon APK.
@@ -55,6 +57,17 @@ class _Architecture(IntFlag):
     """List of architectures for Linux and Windows exports."""
     x86 = auto()  # 32-bit, the default flag if none are set.
     x64 = auto()  # 64-bit
+
+    @classmethod
+    def get_architectures(cls, platforms: Platform, x86_flag, x64_flag):
+        return (_Architecture.x86 if x86_flag else 0) | (_Architecture.x64 if x64_flag else 0)
+
+    @classmethod
+    def get_platform_flags(cls, platforms: Platform, *flags):
+        return cls(sum([2 ** item[0] for item in enumerate(flags) if platforms & item[1]]))
+
+    def __str__(self):
+        return 'x' + '_'.join([a.name[1:] for a in _Architecture if self & a.value])
 
 
 class Permission(IntFlag):
@@ -216,11 +229,10 @@ class AgkProject(IniFile):
     def get_release_folder(self, platform_name: str, architectures: _Architecture = None):
         """Returns the release folder for the given platform name."""
         release_folder = f"{self._name}" \
-                         f"{'_' + self._release_name if self._release_name else ''}" \
-                         f"{'_' + self._version if self._version else ''}" \
-                         f"_{platform_name}"
-        if architectures is not None:
-            release_folder += '_x' + '_'.join([a.name[1:] for a in _Architecture if architectures & a.value])
+                         f"{f'_{self._release_name}' if self._release_name else ''}" \
+                         f"{f'_{self._version}' if self._version else ''}" \
+                         f"_{platform_name}" \
+                         f"{f'_{str(architectures)}' if architectures else ''}"
         # Remove characters that aren't letters, numbers, or underscores.
         # release_folder = release_folder.replace(' ', '_')
         # release_folder = re.sub(r'[^A-Za-z0-9_]', '', release_folder)
@@ -1260,6 +1272,8 @@ class AgkBuild:
         if exclude_media and not isinstance(exclude_media, (list, set)):
             raise ValueError('The "exclude_media" value must be a list or set of file names.')
 
+        self.release_paths = {}
+
         print("")  # blank line for cleaner sysout.
         project = AgkProject(project_file)
         main_code_file = os.path.join(project.base_path, "main.agc")
@@ -1316,7 +1330,8 @@ class AgkBuild:
                             shutil.copy(filename, dst)
                 if archive_output:
                     # Zip up each output folder.
-                    with zipfile.ZipFile(f"{output_folder}.zip", 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
+                    zip_path = f"{output_folder}.zip"
+                    with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
                         # noinspection PyShadowingNames
                         for root, dirs, files in os.walk(output_folder):
                             # noinspection PyShadowingNames
@@ -1326,34 +1341,32 @@ class AgkBuild:
                             for filename in [os.path.join(root, filename) for filename in files]:
                                 zfp.write(filename, os.path.relpath(filename, output_folder))
                     _rmtree(output_folder)
-
-            def get_architectures(x86_flag, x64_flag):
-                return (_Architecture.x86 if x86_flag else 0) | (_Architecture.x64 if x64_flag else 0)
+                    return zip_path
+                return output_folder
 
             # Now compile and export.
             compiler = AgkCompiler()
             compiler.compile(project)
             if platforms & (Platform.WINDOWS_32 | Platform.WINDOWS_64):
-                # architectures = _Architecture.x86 if platforms & Platform.WINDOWS_32 else 0
-                architectures = _Architecture(sum([2**item[0] for item in
-                                                   enumerate([Platform.WINDOWS_32, Platform.WINDOWS_64])
-                                                   if platforms & item[1]]))
-                post_export(compiler.export_windows(project, architectures))
+                architectures = _Architecture.get_platform_flags(platforms, Platform.WINDOWS_32, Platform.WINDOWS_64)
+                release_path = post_export(compiler.export_windows(project, architectures))
+                self.release_paths[platforms & (Platform.WINDOWS_32 | Platform.WINDOWS_64)] = release_path
             if platforms & (Platform.LINUX_32 | Platform.LINUX_64):
-                architectures = _Architecture(sum([2**item[0] for item in
-                                                   enumerate([Platform.LINUX_32, Platform.LINUX_64])
-                                                   if platforms & item[1]]))
-                post_export(compiler.export_linux(project, architectures))
-            # if platforms & Platform.ANDROID:
-            #     compiler.export_apk(project, **kwargs)
+                architectures = _Architecture.get_platform_flags(platforms, Platform.LINUX_32, Platform.LINUX_64)
+                release_path = post_export(compiler.export_linux(project, architectures))
+                self.release_paths[platforms & (Platform.LINUX_32 | Platform.LINUX_64)] = release_path
             if platforms & Platform.HTML5:
-                post_export(compiler.export_html5(project))
+                release_path = post_export(compiler.export_html5(project))
+                self.release_paths[Platform.HTML5] = release_path
             if platforms & Platform.GOOGLE_APK:
-                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
+                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
+                self.release_paths[Platform.GOOGLE_APK] = release_path
             if platforms & Platform.AMAZON_APK:
-                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
+                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
+                self.release_paths[Platform.AMAZON_APK] = release_path
             if platforms & Platform.OUYA_APK:
-                compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
+                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
+                self.release_paths[Platform.OUYA_APK] = release_path
         finally:
             os.replace(backup_code_file, main_code_file)
             # Restore exclude media files back into the media folder.
