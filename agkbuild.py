@@ -491,6 +491,8 @@ class AgkCompiler:
 
         # check keystore
         if keystore_file:
+            if not os.path.isabs(keystore_file):
+                keystore_file = os.path.join(project.base_path, keystore_file)
             if not os.path.exists(keystore_file):
                 raise ValueError('Could not find keystore file location.')
             if not keystore_password:

@@ -7,7 +7,7 @@ FILE_3=steam-off.agc;-1
 FILE_4=steam-on.agc;-1
 
 [files]
-FILE_NAME_0=1;main.agc;888;0
+FILE_NAME_0=1;main.agc;890;0
 
 [apk_settings]
 alias=
