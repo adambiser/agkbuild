@@ -8,16 +8,18 @@ INFO_FILES = [('README.txt', '.'),
 
 # This is the regular full version.
 info = AgkBuild(project_file='AGKBuildExample.agk',
-         include_tags={"demo": "demo-off.agc",
-                       "steam": "steam-off.agc"},
-         exclude_media=DEMO_MEDIA_FILES,
-         include_files=INFO_FILES,
-         apk_sdk_version="5.0",
-         apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
-         apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
-         platforms=WINDOWS_32 | WINDOWS_64 | LINUX_32 | LINUX_64 | GOOGLE_APK | AMAZON_APK | HTML5,
-         )
-
+                include_tags={"demo": "demo-off.agc",
+                              "steam": "steam-off.agc"},
+                exclude_media=DEMO_MEDIA_FILES,
+                include_files=INFO_FILES,
+                apk_sdk_version="5.0",
+                apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
+                apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
+                platforms=WINDOWS_32 | WINDOWS_64 | LINUX_32 | LINUX_64 | GOOGLE_APK | AMAZON_APK | HTML5,
+                )
+# The AgkBuild object has a release_paths attribute that can be used to determine where a release was built and perform
+# additional tasks on it.
+print(info.release_paths)
 
 # This is the full version release for Steam.
 AgkBuild(project_file='AGKBuildExample.agk',
