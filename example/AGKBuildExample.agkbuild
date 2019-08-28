@@ -1,23 +1,30 @@
-DEMO_FILES = ['demo.txt', 'Folder2/demo.txt']
-FULL_FILES = ['full.txt']
+# These files are only for the demo release.
+DEMO_MEDIA_FILES = ['demo.txt', 'Folder2/demo.txt']
+# These files are only for the full release.
+FULL_MEDIA_FILES = ['full.txt']
+
+INFO_FILES = [('README.txt', '.'),
+              ('help\*.*', 'help')]
 
 # This is the regular full version.
-AgkBuild(project_file='AGKBuildExample.agk',
+info = AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
-         exclude_media=DEMO_FILES,
-         include_files=[('README.txt', '.'),
-                        ('help\*.*', 'help')],
+         exclude_media=DEMO_MEDIA_FILES,
+         include_files=INFO_FILES,
          apk_sdk_version="5.0",
+         apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
+         apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
          platforms=WINDOWS_32 | WINDOWS_64 | LINUX_32 | LINUX_64 | GOOGLE_APK | AMAZON_APK | HTML5,
          )
+
 
 # This is the full version release for Steam.
 AgkBuild(project_file='AGKBuildExample.agk',
          release_name='Steam',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-on.agc"},
-         exclude_media=DEMO_FILES,
+         exclude_media=DEMO_MEDIA_FILES,
          platforms=WINDOWS_32,
          )
 
@@ -28,7 +35,7 @@ AgkBuild(project_file='AGKBuildExample.agk',
          apk_package_name='com.test.agkbuildexampledemo',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
-         exclude_media=FULL_FILES,
+         exclude_media=FULL_MEDIA_FILES,
          platforms=WINDOWS_32 | LINUX_32,
          archive_output=True,
          )
