@@ -1,0 +1,8 @@
+The entire project is covered by the GPL license which follows or any
+later version of the GPL license.
+
+Note that the project includes code from other libraries (zlib, bzip2, xz,
+libtld, controlled_vars) which are governed by their own license. However,
+you should get a copy of those libraries from their own source instead of
+using our version in wpkg since the wpkg versions were somewhat modified
+to fit the need for the wpkg.exe to be 100% a standalone software.

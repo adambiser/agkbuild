@@ -10,7 +10,7 @@ This will scan the project's main.agc file for a constant called VERSION to use 
 Exporting Android APKs differs from the other export options because it produces a single file rather than a folder.
 These are already archives
 
-Release folders use the following naming format: project_name[_release_name][_version]_platform.
+Release folders use the following naming format: project_name[_version]_platform[_release_name].
 
 Setting USE_DEFINED_PROJECT_OUTPUT_PATHS to True will cause the compiler to use the Android and HTML5 output folders
 that are defined in the AGK project file rather than the default release folders.
@@ -22,6 +22,7 @@ import argparse
 from collections import OrderedDict
 import glob
 from enum import IntEnum, IntFlag, auto
+import math
 import os
 import PIL.Image as Image
 import platform
@@ -29,7 +30,9 @@ import re
 import shutil
 from stat import S_IWRITE
 import subprocess
-from typing import List, Tuple
+import textwrap
+# import time
+from typing import Iterable, List, Tuple
 import zipfile
 
 __version__ = "0.1"
@@ -122,6 +125,14 @@ def _rmtree(folder):
     shutil.rmtree(folder, onerror=_onerror)
 
 
+def _get_script_path():
+    try:
+        return os.path.dirname(__file__)
+    except NameError:
+        import sys
+        return os.path.dirname(os.path.realpath(sys.argv[0]))
+
+
 class IniFile:
     """Reads and provides access to the values within an INI file."""
     def __init__(self, filename):
@@ -211,6 +222,11 @@ class AgkProject(IniFile):
         self._name = value
 
     @property
+    def safe_name(self):
+        # Remove everything but letters, numbers and underscores.
+        return re.sub(r'[^A-Za-z0-9_]', '', self.name)
+
+    @property
     def release_name(self):
         """
         The release name.  This is used to differentiate between multiple exports to the same platform.
@@ -238,11 +254,11 @@ class AgkProject(IniFile):
 
     def get_release_folder(self, platform_name: str, architectures: _Architecture = None):
         """Returns the release folder for the given platform name."""
-        release_folder = f"{self._name}" \
-                         f"{f'_{self._release_name}' if self._release_name else ''}" \
+        release_folder = f"{self.safe_name}" \
                          f"{f'_{self._version}' if self._version else ''}" \
                          f"_{platform_name}" \
-                         f"{f'_{str(architectures)}' if architectures else ''}"
+                         f"{f'_{str(architectures)}' if architectures else ''}" \
+                         f"{f'_{self._release_name}' if self._release_name else ''}"
         # Remove characters that aren't letters, numbers, or underscores.
         # release_folder = release_folder.replace(' ', '_')
         # release_folder = re.sub(r'[^A-Za-z0-9_]', '', release_folder)
@@ -1183,12 +1199,12 @@ class AgkCompiler:
         _rmtree(output_folder)
         os.makedirs(output_folder)
         player_path = os.path.join(self._agk_path, "Players", "Linux")
-        # Remove everything but letters, numbers and underscores.
-        clean_name = re.sub(r'[^A-Za-z0-9_]', '', project.name)
         if architectures & _Architecture.x86:
-            shutil.copyfile(os.path.join(player_path, "LinuxPlayer32"), os.path.join(output_folder, f"{clean_name}32"))
+            shutil.copyfile(os.path.join(player_path, "LinuxPlayer32"), os.path.join(output_folder,
+                                                                                     f"{project.safe_name}32"))
         if architectures & _Architecture.x64:
-            shutil.copyfile(os.path.join(player_path, "LinuxPlayer64"), os.path.join(output_folder, f"{clean_name}64"))
+            shutil.copyfile(os.path.join(player_path, "LinuxPlayer64"), os.path.join(output_folder,
+                                                                                     f"{project.safe_name}64"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
         if os.listdir('Plugins'):
@@ -1389,30 +1405,215 @@ class AgkBuild:
                     os.rename(src_file, dst_file)
             _rmtree(media_exclude_path)
 
-    def archive(self, p):
+    def add_linux_setup_script(self, platforms: Platform, script_name: str = "setup.sh"):
+        """
+        Adds a bash script file for installing dependencies and setting the executable flag for the game application.
+
+        :param platforms: Platform flags.
+        :param script_name: The script file name.
+        :return:
+        """
+        for p in Platform:
+            if platforms & p:
+                if p not in [Platform.LINUX_86, Platform.LINUX_64, Platform.LINUX_86_64]:
+                    raise ValueError("Only Linux releases can have setup.sh files.")
+                # Must be written with Linux newlines.
+                with open(os.path.join(self.release_paths[p], script_name), "w", newline="\n") as fp:
+                    fp.write('''#!/bin/bash
+set -e
+
+echo "[setup] Installing dependencies..."
+apt-get install libopenal1 -qy
+
+echo "[setup] Setting executable flag..."
+''')
+                    architecture = _Architecture.from_platform(p)
+                    if architecture & _Architecture.x86:
+                        fp.write(f"chmod +x {self.project.safe_name}32\n")
+                    if architecture & _Architecture.x64:
+                        fp.write(f"chmod +x {self.project.safe_name}64\n")
+
+    def create_debian_package(self, platforms: Platform,
+                              email_name: str,
+                              email_address: str,
+                              short_description: str,
+                              long_description: str,
+                              application_icon: str,  # A PNG file path relative to the AGK project folder.
+                              home_page: str = None,
+                              package_name: str = None,
+                              generic_name: str = "A game.",
+                              comment: str = "A game created with AppGameKit.",
+                              usr_subfolder: str = "games",
+                              section: str = "games",
+                              categories: Iterable[str] = ("Game",)
+                              ):
+        if not email_name:
+            raise ValueError("An email_name is required.")
+        if not email_address:
+            raise ValueError("An email_address is required.")
+        if not re.match(r"(^[A-Za-z0-9_.+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$)", email_address):
+            raise ValueError("The email_address is invalid.")
+
+        if not short_description:
+            raise ValueError("A short_description is required.")
+        short_description = short_description.strip()
+        if len(short_description) >= 80:
+            raise ValueError("The short_description must be less than 80 characters.")
+        if not long_description:
+            raise ValueError("A long_description is required.")
+        long_description = long_description.strip()
+
+        # Package names must consist only of lower case letters (a-z), digits (0-9), plus (+) and minus (-)
+        # signs, and periods (.).
+        # They must be at least two characters long and must start with an alphanumeric character.
+        if not package_name:
+            package_name = re.sub(r'[^A-Za-z0-9+.-]', '', self.project.name.lower())
+        if not package_name or len(package_name) <= 2:
+            raise ValueError("The package_name must be at least two characters.")
+        if not str.isalnum(package_name[0]):
+            raise ValueError("The package_name must start with an alphanumeric character.")
+
+        if not usr_subfolder:
+            raise ValueError("A usr_subfolder must be specified.")
+
+        if home_page and not re.match(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
+                                      home_page):
+            raise ValueError("The home_page is invalid.")
+
+        # Validate the icon.
+        def _is_power_of_2(n):
+            return (n & (n - 1) == 0) and n != 0
+
+        if not application_icon.endswith('.png'):
+            raise ValueError('The application icon must be a PNG file.')
+        icon_path = os.path.join(self.project.base_path, application_icon)
+        application_icon = os.path.split(application_icon)[1]  # We just want the file name now.
+        if not os.path.exists(icon_path):
+            raise ValueError("Could not find the application icon location.")
+        icon_image = Image.open(icon_path)
+        if icon_image.width != icon_image.height:
+            raise ValueError("Application icon is not square.")
+        if not _is_power_of_2(icon_image.width):
+            raise ValueError("Application icon is not a power of 2.")
+        del icon_image
+
+        def _get_folder_size(folder_path):
+            total_size = 0
+            for root, _, filenames in os.walk(folder_path):
+                total_size += sum([os.path.getsize(f) for f in [os.path.join(root, f) for f in filenames]
+                                   if not os.path.islink(f)])
+            return total_size
+
+        # Wrap the long description.
+        long_description = '\n .\n'.join(['\n'.join(textwrap.wrap(line, 80, initial_indent=" ", subsequent_indent=" ",
+                                                                  replace_whitespace=False))
+                                          for line in long_description.split("\n")])
+
+        temp_path = os.path.join(self.project.base_path, "release", "temp")
+
+        for p in Platform:
+            if platforms & p:
+                if p not in [Platform.LINUX_86, Platform.LINUX_64]:
+                    raise ValueError(f"Creating a Debian package for this platform is supported: {p.name}")
+                release_path = self.release_paths[p]
+                installed_size = math.ceil(_get_folder_size(release_path) / 1024)
+                executable = f"{self.project.safe_name}{'32' if p == Platform.LINUX_86 else '64'}"
+
+                try:
+                    debian_path = os.path.join(temp_path, "DEBIAN")
+                    package_path = os.path.join(temp_path, "usr", usr_subfolder, package_name)
+                    applications_path = os.path.join(temp_path, "usr", "share", "applications")
+                    os.makedirs(debian_path)
+                    # os.makedirs(package_path)
+                    os.makedirs(applications_path)
+
+                    # Create control file
+                    # https://www.debian.org/doc/debian-policy/ch-controlfields.html
+                    with open(os.path.join(debian_path, "control"), "w", newline="\n") as fp:
+                        # TODO Research multi-arch packages.
+                        # TODO Does WPKG support i386?
+                        # Architecture: any
+                        # Multi-Arch: same
+                        fp.write(f'''Package: {package_name}
+Version: {self.project.version}
+Architecture: {"i386" if p == Platform.LINUX_86 else "amd64"}
+Section: {section}
+Priority: optional
+Depends: libopenal1
+Installed-Size: {installed_size}
+Maintainer: {email_name} <{email_address}>
+Description: {short_description}
+{long_description}
+''')
+                        if home_page:
+                            fp.write(f"Homepage: {home_page}\n")
+
+                    # Create the postinst script.
+                    with open(os.path.join(debian_path, "postinst.sh"), "w", newline="\n") as fp:
+                        fp.write(f'''#!/bin/bash
+
+# This package was built using Windows Packager.
+# https://windowspackager.org/
+# Because of this, permissions are set here.
+
+set -e
+chmod -R 755 /usr/{usr_subfolder}/{package_name}/{executable}
+exit 0
+''')
+
+                    # Create the desktop file
+                    with open(os.path.join(applications_path, f"{package_name}.desktop"), "w", newline="\n") as fp:
+                        fp.write(f'''[Desktop Entry]
+Name={self.project.name}
+GenericName={generic_name}
+Comment={comment}
+Exec=/usr/{usr_subfolder}/{package_name}/{executable}
+StartupNotify=true
+Terminal=false
+Type=Application
+Icon=/usr/{usr_subfolder}/{package_name}/{application_icon}
+Categories={";".join(categories)};
+''')
+
+                    shutil.copytree(release_path, package_path, ignore=shutil.ignore_patterns(*IGNORE_FILES))
+                    shutil.copyfile(icon_path, os.path.join(package_path, application_icon))
+
+                    # Create the Debian package.
+                    completed_process = subprocess.run([os.path.join(_get_script_path(), "bin", "wpkg", "wpkg.exe"),
+                                                        "--build", temp_path],
+                                                       cwd=os.path.join(self.project.base_path, "release"),
+                                                       stdout=subprocess.PIPE,
+                                                       universal_newlines=True)
+                    error = completed_process.stdout.strip()
+                    if error:
+                        raise SystemError(f'Zip align tool returned error: {error}')
+                finally:
+                    _rmtree(temp_path)
+
+    def archive(self, platforms: Platform):
         """
         Archives a platform's release folder into a zip file.
         The release folder will then be removed and the release_path for the platform will be the zip file path.
 
-        :param p: The platform flag.
+        :param platforms: The platform flags.  Can be multiple flags.
         """
-        if p in [Platform.GOOGLE_APK, Platform.AMAZON_APK, Platform.OUYA_APK]:
-            raise ValueError("Android APK releases are already archives.")
-
-        release_path = self.release_paths[p]
-        zip_path = f"{release_path}.zip"
-        with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
-            # noinspection PyShadowingNames
-            for root, dirs, files in os.walk(release_path):
-                # noinspection PyShadowingNames
-                for dirname in [os.path.join(root, dirname) for dirname in dirs]:
-                    zfp.write(dirname, os.path.relpath(dirname, release_path))
-                # noinspection PyShadowingNames
-                for filename in [os.path.join(root, filename) for filename in files]:
-                    zfp.write(filename, os.path.relpath(filename, release_path))
-        _rmtree(release_path)
-        # Update the release path.
-        self.release_paths[p] = zip_path
+        for p in Platform:
+            if platforms & p:
+                if p in [Platform.GOOGLE_APK, Platform.AMAZON_APK, Platform.OUYA_APK]:
+                    raise ValueError("Android APK releases are already archives.")
+                print(f"Archiving {p.name}")
+                release_path = self.release_paths[p]
+                zip_path = f"{release_path}.zip"
+                with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
+                    for root, dirs, files in os.walk(release_path):
+                        for dirname in [os.path.join(root, dirname) for dirname in dirs]:
+                            zfp.write(dirname, os.path.relpath(dirname, release_path))
+                        for filename in [os.path.join(root, filename) for filename in files]:
+                            rel_path = os.path.relpath(filename, release_path)
+                            zfp.write(filename, rel_path)
+                _rmtree(release_path)
+                # Update the release path.
+                self.release_paths[p] = zip_path
 
 
 def _exec_build_tasks(filename):
@@ -1428,7 +1629,6 @@ def _exec_build_tasks(filename):
     tasks.AgkBuild = AgkBuild
     # Allow flags and values to be used in the agkbuild file without the class name.
     for v in [v for e in [Platform,
-                          # Architecture,
                           Permission,
                           Orientation,
                           ArCoreMode,
