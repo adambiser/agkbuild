@@ -32,10 +32,10 @@ from stat import S_IWRITE
 import subprocess
 import textwrap
 # import time
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "0.1"
+__version__ = "0.2"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
@@ -131,6 +131,24 @@ def _get_script_path():
     except NameError:
         import sys
         return os.path.dirname(os.path.realpath(sys.argv[0]))
+
+
+def _get_folder_size(folder_path):
+    total_size = 0
+    for root, _, filenames in os.walk(folder_path):
+        total_size += sum([os.path.getsize(f) for f in [os.path.join(root, f) for f in filenames]
+                           if not os.path.islink(f)])
+    return total_size
+
+
+def _is_power_of_2(n):
+    return (n & (n - 1) == 0) and n != 0
+
+
+def _validate_url(homepage):
+    if homepage and not re.match(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
+                                 homepage):
+        raise ValueError("The homepage is invalid.")
 
 
 class IniFile:
@@ -263,6 +281,17 @@ class AgkProject(IniFile):
         # release_folder = release_folder.replace(' ', '_')
         # release_folder = re.sub(r'[^A-Za-z0-9_]', '', release_folder)
         return os.path.join(self._base_path, "release", release_folder)
+
+    def get_nsis_script_path(self, p: Platform):
+        architectures = _Architecture.from_platform(p)
+        # Having "-script" seems redundant, but it keeps the script grouped with the installer exe in the release folder
+        # when sorted by filename.
+        script_file = f"{self.safe_name}" \
+                      f"{f'-{self._version}' if self._version else ''}" \
+                      f"{f'-{str(architectures)}' if architectures else ''}" \
+                      f"{f'-{self._release_name}' if self._release_name else ''}" \
+                      f"-script.nsi"
+        return os.path.join(self._base_path, "release", script_file)
 
 
 class AgkCompiler:
@@ -1205,6 +1234,9 @@ class AgkCompiler:
         if architectures & _Architecture.x64:
             shutil.copyfile(os.path.join(player_path, "LinuxPlayer64"), os.path.join(output_folder,
                                                                                      f"{project.safe_name}64"))
+        icon_path = os.path.join(project.base_path, "icon.ico")
+        if os.path.exists(icon_path):
+            shutil.copyfile(icon_path, os.path.join(output_folder, "icon.ico"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
         if os.listdir('Plugins'):
@@ -1234,6 +1266,9 @@ class AgkCompiler:
             shutil.copyfile(os.path.join(player_path, "Windows64.exe"),
                             os.path.join(output_folder,
                                          f"{project.name}{'64' if architectures & _Architecture.x86 else ''}.exe"))
+        icon_path = os.path.join(project.base_path, "icon.ico")
+        if os.path.exists(icon_path):
+            shutil.copyfile(icon_path, os.path.join(output_folder, "icon.ico"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
         if os.listdir('Plugins'):
@@ -1251,7 +1286,6 @@ class AgkBuild:
     def __init__(self,
                  project_file: str,
                  platforms: int,
-                 # architectures: Architecture = Architecture.x86,
                  project_name: str = None,
                  release_name: str = None,
                  constants: dict = None,
@@ -1405,18 +1439,22 @@ class AgkBuild:
                     os.rename(src_file, dst_file)
             _rmtree(media_exclude_path)
 
-    def add_linux_setup_script(self, platforms: Platform, script_name: str = "setup.sh"):
+    def create_linux_setup_script(self, platforms: Platform, script_name: str = "setup.sh"):
         """
-        Adds a bash script file for installing dependencies and setting the executable flag for the game application.
+        Creates a bash script file in the release folder that installs dependencies and sets the executable flag for the
+        game application.
+
+        Valid platform flags are: `LINUX_86`, `LINUX_64`, and `LINUX_86_64`.
 
         :param platforms: Platform flags.
-        :param script_name: The script file name.
+        :param script_name: The script file name.  Defaults to "setup.sh".
         :return:
         """
         for p in Platform:
             if platforms & p:
                 if p not in [Platform.LINUX_86, Platform.LINUX_64, Platform.LINUX_86_64]:
                     raise ValueError("Only Linux releases can have setup.sh files.")
+                print(f"Adding setup.sh script for {p.name}")
                 # Must be written with Linux newlines.
                 with open(os.path.join(self.release_paths[p], script_name), "w", newline="\n") as fp:
                     fp.write('''#!/bin/bash
@@ -1439,14 +1477,54 @@ echo "[setup] Setting executable flag..."
                               short_description: str,
                               long_description: str,
                               application_icon: str,  # A PNG file path relative to the AGK project folder.
-                              home_page: str = None,
-                              package_name: str = None,
-                              generic_name: str = "A game.",
-                              comment: str = "A game created with AppGameKit.",
                               usr_subfolder: str = "games",
+                              package_name: str = None,
+                              homepage: str = None,
                               section: str = "games",
+                              generic_name: str = "Game",
+                              comment: str = "A game created with AppGameKit.",
                               categories: Iterable[str] = ("Game",)
                               ):
+        """
+        Creates a Debian package using the files in a platform's release folder.
+        The release folder is not removed during this process.
+
+        By default, the game will be installed to /usr/<usr_subfolder>/<package_name> where usr_subfolder defaults to
+        "games".
+
+        Valid platform flags are `LINUX_86` and `LINUX_64`.
+
+        For information on the fields within the package control file, see:
+        https://www.debian.org/doc/debian-policy/ch-controlfields.html
+
+        For information on the fields within the package .desktop file, see:
+        https://specifications.freedesktop.org/desktop-entry-spec/desktop-entry-spec-latest.html#recognized-keys
+
+        This process uses Windows Packager.
+        https://windowspackager.org/
+
+        :param platforms: The platform flags.
+        :param email_name: The email name for the package control file.
+        :param email_address: The email address for the package control file.
+        :param short_description: The short description for the package control file.  Must be less than 80 characters.
+        :param long_description: The long description for the package control file.
+        :param application_icon: The application icon.  Must be a PNG that is a square power of 2, preferably 256x256.
+        :param usr_subfolder: The folder within the `usr` folder where your game is installed.  Defaults to "games".
+        :param package_name: The package name.  Defaults to project name converted to lower-case with invalid
+            characters removed.  Package names must consist only of lower case letters (a-z), digits (0-9), plus (+) and
+            minus (-) signs, and periods (.).  They must be at least two characters long and must start with an
+            alphanumeric character.
+        :param homepage: The homepage for the package control file.  Defaults to None.
+        :param section: The application area into which the package is classified for the package control file.
+            Defaults to "games".
+        :param generic_name: A very general name describing what the program is, ie Firefox is a "Web Browser".
+            This is used in the package .desktop file.  Defaults to "Game".
+        :param comment: A comment which can/will be used as a tooltip.  This is used in the package .desktop file.
+            Defaults to "A game created with AppGameKit."
+        :param categories: The categories in which this entry should be shown.  This is used in the package .desktop
+            file.  Defaults to ("Game",)
+        :return:
+        """
         if not email_name:
             raise ValueError("An email_name is required.")
         if not email_address:
@@ -1476,14 +1554,9 @@ echo "[setup] Setting executable flag..."
         if not usr_subfolder:
             raise ValueError("A usr_subfolder must be specified.")
 
-        if home_page and not re.match(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
-                                      home_page):
-            raise ValueError("The home_page is invalid.")
+        _validate_url(homepage)
 
         # Validate the icon.
-        def _is_power_of_2(n):
-            return (n & (n - 1) == 0) and n != 0
-
         if not application_icon.endswith('.png'):
             raise ValueError('The application icon must be a PNG file.')
         icon_path = os.path.join(self.project.base_path, application_icon)
@@ -1497,13 +1570,6 @@ echo "[setup] Setting executable flag..."
             raise ValueError("Application icon is not a power of 2.")
         del icon_image
 
-        def _get_folder_size(folder_path):
-            total_size = 0
-            for root, _, filenames in os.walk(folder_path):
-                total_size += sum([os.path.getsize(f) for f in [os.path.join(root, f) for f in filenames]
-                                   if not os.path.islink(f)])
-            return total_size
-
         # Wrap the long description.
         long_description = '\n .\n'.join(['\n'.join(textwrap.wrap(line, 80, initial_indent=" ", subsequent_indent=" ",
                                                                   replace_whitespace=False))
@@ -1515,6 +1581,7 @@ echo "[setup] Setting executable flag..."
             if platforms & p:
                 if p not in [Platform.LINUX_86, Platform.LINUX_64]:
                     raise ValueError(f"Creating a Debian package for this platform is supported: {p.name}")
+                print(f"Creating Debian package for {p.name}")
                 release_path = self.release_paths[p]
                 installed_size = math.ceil(_get_folder_size(release_path) / 1024)
                 executable = f"{self.project.safe_name}{'32' if p == Platform.LINUX_86 else '64'}"
@@ -1531,7 +1598,6 @@ echo "[setup] Setting executable flag..."
                     # https://www.debian.org/doc/debian-policy/ch-controlfields.html
                     with open(os.path.join(debian_path, "control"), "w", newline="\n") as fp:
                         # TODO Research multi-arch packages.
-                        # TODO Does WPKG support i386?
                         # Architecture: any
                         # Multi-Arch: same
                         fp.write(f'''Package: {package_name}
@@ -1545,23 +1611,22 @@ Maintainer: {email_name} <{email_address}>
 Description: {short_description}
 {long_description}
 ''')
-                        if home_page:
-                            fp.write(f"Homepage: {home_page}\n")
+                        if homepage:
+                            fp.write(f"Homepage: {homepage}\n")
 
                     # Create the postinst script.
                     with open(os.path.join(debian_path, "postinst.sh"), "w", newline="\n") as fp:
                         fp.write(f'''#!/bin/bash
-
 # This package was built using Windows Packager.
 # https://windowspackager.org/
 # Because of this, permissions are set here.
-
 set -e
 chmod -R 755 /usr/{usr_subfolder}/{package_name}/{executable}
 exit 0
 ''')
 
                     # Create the desktop file
+                    # https://specifications.freedesktop.org/desktop-entry-spec/desktop-entry-spec-latest.html#recognized-keys
                     with open(os.path.join(applications_path, f"{package_name}.desktop"), "w", newline="\n") as fp:
                         fp.write(f'''[Desktop Entry]
 Name={self.project.name}
@@ -1582,20 +1647,153 @@ Categories={";".join(categories)};
                     completed_process = subprocess.run([os.path.join(_get_script_path(), "bin", "wpkg", "wpkg.exe"),
                                                         "--build", temp_path],
                                                        cwd=os.path.join(self.project.base_path, "release"),
-                                                       stdout=subprocess.PIPE,
+                                                       # stdout=subprocess.PIPE,
+                                                       stderr=subprocess.PIPE,
                                                        universal_newlines=True)
-                    error = completed_process.stdout.strip()
+                    # error = completed_process.stdout.strip()
+                    error = completed_process.stderr.strip()
                     if error:
-                        raise SystemError(f'Zip align tool returned error: {error}')
+                        raise SystemError(f'Windows Packager returned error:\n{error}')
+                    if completed_process.returncode:
+                        raise SystemError(f'Windows Packager returned code: {completed_process.returncode}')
                 finally:
                     _rmtree(temp_path)
 
+    def create_nsis_installer(self, platforms: Platform,
+                              developer_name: str,
+                              homepage: str = None,
+                              project_guid: str = None,
+                              defines: List[Union[str, Tuple[str, str]]] = None,
+                              inline_template: bool = False,
+                              ):
+        """
+        Creates a Windows installer from the release folder for the given platforms.
+        The release folder is not removed during this process.
+
+        Valid platform flags are `WINDOWS_86`, `WINDOWS_64`, and `WINDOWS_86_64`.
+        `WINDOWS_86_64` will create an installer that extracts either the 32- or 64-bit executable depending on the
+        installation operating system.
+
+        This process uses NSIS (Nullsoft Scriptable Install System).
+        https://nsis.sourceforge.io/Main_Page
+
+        :param platforms: The platform flags.
+        :param developer_name: The developer name.
+        :param homepage: Shown in the "Add or Remove Programs" information.
+        :param project_guid: Used when storing the uninstall information in the Windows Registry.
+            This value should **NEVER** change during the lifetime of the project.
+            When not given, "${DEVELOPER_NAME} ${PROJECT_NAME}" is used.
+        :param defines: A list of defines to include in the script.  When a list item is a string, the line will look
+            like `!define NAME`.  When the list item is a tuple of two strings, the line will look like
+            `!define NAME "VALUE"`.
+        :param inline_template: When False (the default), the agkbuild.nsi file is added using `!include`.  When True,
+            the file is added inline at the bottom of the generated script file.
+        :return:
+        """
+        if not developer_name:
+            raise ValueError("The developer_name is required.")
+        _validate_url(homepage)
+
+        # template_script = os.path.join(_get_script_path(), "templates", "NSIS", "agkbuild.nsi")
+        template_script = "agkbuild.nsi"
+        if inline_template:
+            template_script = os.path.join(_get_script_path(), "bin", "NSIS", "Include", template_script)
+        executables = [f"{self.project.name}.exe", f"{self.project.name}64.exe"]
+        for p in Platform:
+            if platforms & p:
+                if p not in [Platform.WINDOWS_86, Platform.WINDOWS_64, Platform.WINDOWS_86_64]:
+                    raise ValueError(f"Creating a Nullsoft Installer for this platform is supported: {p.name}")
+                print(f"Creating a Nullsoft Installer for {p.name}")
+                release_path = self.release_paths[p]
+                script_file = self.project.get_nsis_script_path(p)
+                with open(script_file, "w") as fp:
+                    fp.write("; Install script generated by AgkBuild\n\n")
+                    fp.write(f'!define PROJECT_NAME\t"{self.project.name}"\n')
+                    fp.write(f'!define SAFE_PROJECT_NAME\t"{self.project.safe_name}"\n')
+                    if os.path.exists(os.path.join(release_path, "icon.ico")):
+                        fp.write(f'!define PROJECT_ICON\t"icon.ico"\n')
+                    fp.write(f'!define RELEASE_FILE_PATH\t"{os.path.relpath(release_path, self.project.base_path)}"\n')
+                    fp.write(f"!define ESTIMATEDSIZE\t{math.ceil(_get_folder_size(release_path) / 1024)}\n")
+                    fp.write("\n")
+                    fp.write(f'!define DEVELOPER_NAME\t"{developer_name}"\n')
+                    if homepage:
+                        fp.write(f'!define HOMEPAGE\t"{homepage}"\n')
+                    if project_guid:
+                        fp.write(f'!define PROJECT_GUID\t"{project_guid}"\n')
+                    fp.write("\n")
+                    if self.version:
+                        for part_name, value in zip(["MAJOR", "MINOR", "PATCH"], self.version.split(".")):
+                            fp.write(f"!define PROJECT_VERSION_{part_name}\t{value}\n")
+                    fp.write("\n")
+                    if defines:
+                        for define in defines:
+                            try:
+                                name, value = define
+                                fp.write(f'!define {name}\t"{value}"\n')
+                            except ValueError:
+                                fp.write(f'!define {define}\n')
+                        fp.write("\n")
+                    fp.write(f"!define {p.name}\n")
+                    fp.write(f'!define AGKBUILD_PATH\t"{_get_script_path()}"\n')
+                    fp.write("\n")
+                    # Create the InstallFiles macro.
+                    fp.write("!macro InstallFiles\n")
+                    fp.write('\t; NOTE: The template script handles the executable."\n')
+                    fp.write('\tSetOutPath	"$INSTDIR"\n')
+                    for root, _, files in sorted(os.walk(release_path)):
+                        relpath = os.path.relpath(root, release_path)
+                        if relpath == ".":
+                            relpath = ""
+                        else:
+                            fp.write(f'\n\tSetOutPath\t"{os.path.join("$INSTDIR", relpath)}"\n')
+                        for filename in sorted(files):
+                            # Skip the executables.
+                            if filename in executables and not relpath:
+                                continue
+                            fp.write(f'\tFile\t"{os.path.join("${RELEASE_FILE_PATH}", relpath, filename)}"\n')
+                    fp.write("!macroend\n\n")
+                    # Create the UninstallFiles macro with files and folders in reverse.
+                    fp.write("!macro UninstallFiles\n")
+                    fp.write('\t; NOTE: The template script handles the executable and removing $INSTDIR."\n')
+                    for root, _, files in reversed(sorted(os.walk(release_path))):
+                        relpath = os.path.relpath(root, release_path)
+                        if relpath == ".":
+                            relpath = ""
+                        for filename in reversed(sorted(files)):
+                            # Skip the executables.
+                            if filename in executables and not relpath:
+                                continue
+                            fp.write(f'\tDelete\t/REBOOTOK\t"{os.path.join("$INSTDIR", relpath, filename)}"\n')
+                        if relpath:
+                            fp.write(f'\tRMDir\t/REBOOTOK\t"{os.path.join("$INSTDIR", relpath)}"\n\n')
+                    fp.write("!macroend\n\n")
+                    if inline_template:
+                        with open(template_script, 'r') as tfp:
+                            fp.writelines(tfp.readlines())
+                    else:
+                        fp.write(f'!include "{template_script}"\n')
+                # Compile it
+                completed_process = subprocess.run([os.path.join(_get_script_path(), "bin", "NSIS", "makensis.exe"),
+                                                    "/V2",  # 2=warnings and errors
+                                                    script_file
+                                                    ],
+                                                   cwd=os.path.join(self.project.base_path, "release"),
+                                                   stderr=subprocess.PIPE,
+                                                   universal_newlines=True)
+                error = completed_process.stderr.strip()
+                if error:
+                    raise SystemError(f'Windows Packager returned error:\n{error}')
+                if completed_process.returncode:
+                    raise SystemError(f'Windows Packager returned code: {completed_process.returncode}')
+
     def archive(self, platforms: Platform):
         """
-        Archives a platform's release folder into a zip file.
-        The release folder will then be removed and the release_path for the platform will be the zip file path.
+        Creates a zip archive of the release folder for each given platform flag.
+        The release folder will be removed and the `release_path` for the platform will be set to the created zip file.
 
-        :param platforms: The platform flags.  Can be multiple flags.
+        This method cannot be used for `GOOGLE_APK`, `AMAZON_APK`, or `OUYA_APK`.
+
+        :param platforms: The platform flags.
         """
         for p in Platform:
             if platforms & p:

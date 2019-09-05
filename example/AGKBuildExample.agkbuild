@@ -15,14 +15,30 @@ build = AgkBuild(project_file='AGKBuildExample.agk',
                  apk_sdk_version="5.0",
                  apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
                  apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
-                 platforms=WINDOWS_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
+                 platforms=WINDOWS_86 | WINDOWS_86_64 | LINUX_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
                  )
 
 # The AgkBuild object has a release_paths attribute that can be used to determine where a release was built and perform
 # additional tasks on it.
 print(build.release_paths)
 
-build.add_linux_setup_script(LINUX_86_64)
+build.create_nsis_installer(WINDOWS_86,
+                            developer_name="Some Game Company",
+                            homepage="https://github.com/adambiser/agkbuild",
+                            defines=[
+                                ("INSTALLER_ICON", "${PROJECT_ICON}"),  # Change the installer's icon.
+
+                                "MUI_HEADERIMAGE",
+                                ("MUI_HEADERIMAGE_BITMAP", "images\HeaderImage.bmp"),
+                                "MUI_HEADERIMAGE_RIGHT",
+
+                                ("MUI_WELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
+                                ("MUI_UNWELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
+                            ],
+                            inline_template=True,
+                            )
+
+build.create_linux_setup_script(LINUX_86_64)
 build.archive(LINUX_86_64)
 
 DEB_INFO = {
@@ -35,7 +51,7 @@ DEB_INFO = {
     "application_icon": "linux/AGKBuildExample.png",
 }
 
-build.create_debian_package(LINUX_64, **DEB_INFO)
+build.create_debian_package(LINUX_86 | LINUX_64, **DEB_INFO)
 
 # This is the full version release for Steam.
 AgkBuild(project_file='AGKBuildExample.agk',
