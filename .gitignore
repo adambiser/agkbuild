@@ -2,3 +2,4 @@
 exclude
 *.pyc
 __pycache__
+Thumbs.db
