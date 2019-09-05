@@ -45,8 +45,30 @@ using
 
 Please use the [issue tracker](https://github.com/adambiser/agkbuild/issues).
 
-## License
+## Licenses
 
-This project is licensed under the [GPL-2.0 License](COPYING) to match
-[the AppGameKit IDE](https://github.com/TheGameCreators/AGKIDE) from
-which some of this code was ported.
+The code in project is licensed under the [GPL-2.0 License](COPYING) to
+match [the AppGameKit IDE](https://github.com/TheGameCreators/AGKIDE)
+from which some of this code was ported.
+
+Projects used by this code have their own licenses.
+
+### Microsoft DirectX SDK Redistributables (June 2010)
+
+[Homepage](https://www.microsoft.com/en-us/download/details.aspx?id=6812)
+
+[SDK License](/bin/DirectX/DirectX%20SDK%20EULA.txt)
+
+[Redist License](/bin/DirectX/directx%20redist.txt)
+
+### Nullsoft Scriptable Install System (NSIS)
+
+[Homepage](https://nsis.sourceforge.io/Main_Page)
+
+[License](/bin/NSIS/COPYING)
+
+### Windows Packager
+
+[Homepage](https://windowspackager.org/)
+
+[License](/bin/wpkg/COPYING)
