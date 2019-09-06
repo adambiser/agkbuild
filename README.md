@@ -11,7 +11,7 @@ paid and ad-supported Android releases on Google Play and Amazon, etc.
 all being built from the same code base.
 
 AppGameKit doesn't have conditional compilation and #include/#insert
-always performed, even inside of a false condition.
+lines are always performed, even inside of a false condition.
 
 ```
 if 0  // No conditional compilation
@@ -47,9 +47,10 @@ Please use the [issue tracker](https://github.com/adambiser/agkbuild/issues).
 
 ## Licenses
 
-The code in project is licensed under the [GPL-2.0 License](COPYING) to
-match [the AppGameKit IDE](https://github.com/TheGameCreators/AGKIDE)
-from which some of this code was ported.
+The Python code in this project and the agkbuild.nsi include file are
+licensed under the [GPL-2.0 License](COPYING) to match
+[the AppGameKit IDE](https://github.com/TheGameCreators/AGKIDE) from
+which some of this code (export_apk and export_html5) was ported.
 
 Projects used by this code have their own licenses.
 
