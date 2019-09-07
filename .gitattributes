@@ -1,2 +1,2 @@
-bin/ linguist-vendored
+bin/* linguist-vendored
 bin/NSIS/Include/agkbuild.nsi linguist-vendored=False
