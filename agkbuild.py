@@ -1271,7 +1271,7 @@ class AgkCompiler:
             shutil.copyfile(icon_path, os.path.join(output_folder, "icon.ico"))
         shutil.copytree(os.path.join(project.base_path, "media"), os.path.join(output_folder, "media"),
                         ignore=shutil.ignore_patterns(*IGNORE_FILES))
-        if os.listdir('Plugins'):
+        if os.path.exists("Plugins") and os.listdir('Plugins'):
             ignore_dlls = []
             if not architectures & _Architecture.x86:
                 ignore_dlls.append('Windows.dll')
