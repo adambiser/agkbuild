@@ -35,7 +35,7 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "0.2.1"
+__version__ = "0.3"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
@@ -1433,6 +1433,9 @@ class AgkBuild:
             # Set up export-related fields.
             if project_name:
                 project.name = project_name
+                # Set the apk_app_name if it hasn't already been manually set.
+                if "apk_app_name" not in kwargs:
+                    kwargs["apk_app_name"] = project_name
             if release_name:
                 project.release_name = release_name
 

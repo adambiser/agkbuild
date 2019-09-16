@@ -62,11 +62,10 @@ AgkBuild(project_file='AGKBuildExample.agk',
 # This is the demo release.
 AgkBuild(project_file='AGKBuildExample.agk',
          project_name='AGKBuildExampleDemo',
-         apk_app_name='AGKBuildExampleDemo',
          apk_package_name='com.test.agkbuildexampledemo',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
          exclude_media=FULL_MEDIA_FILES,
-         platforms=WINDOWS_86 | LINUX_86,
+         platforms=WINDOWS_86 | LINUX_86 | GOOGLE_APK,
          archive_output=True,
          )
