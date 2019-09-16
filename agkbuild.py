@@ -1033,8 +1033,8 @@ class AgkCompiler:
                           "lib/arm64-v8a/libandroid_player.so")
                 zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libandroid_player.so"),
                           "lib/armeabi-v7a/libandroid_player.so")
-                zfp.write(os.path.join(android_folder, "lib", "x86", "libandroid_player.so"),
-                          "lib/x86/libandroid_player.so")
+                # zfp.write(os.path.join(android_folder, "lib", "x86", "libandroid_player.so"),
+                #           "lib/x86/libandroid_player.so")
 
                 if arcore_mode != ArCoreMode.ARCORE_NONE:
                     # use real ARCore lib
@@ -1042,8 +1042,8 @@ class AgkCompiler:
                               "lib/arm64-v8a/libarcore_sdk.so")
                     zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libarcore_sdk.so"),
                               "lib/armeabi-v7a/libarcore_sdk.so")
-                    zfp.write(os.path.join(android_folder, "lib", "x86", "libarcore_sdk.so"),
-                              "lib/x86/libarcore_sdk.so")
+                    # zfp.write(os.path.join(android_folder, "lib", "x86", "libarcore_sdk.so"),
+                    #           "lib/x86/libarcore_sdk.so")
 
                 if app_type != AgkCompiler.APK_TYPE_OUYA:
                     # copy assets for Google and Amazon
