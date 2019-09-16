@@ -835,6 +835,8 @@ class AgkCompiler:
             if app_type == AgkCompiler.APK_TYPE_GOOGLE and snapchat_client_id:
                 contents, count = re.subn(r'(<string name="snap_chat_id">)[^<]+(</string>)',
                                           rf'\1{snapchat_client_id}\2', contents)
+                if not count:
+                    raise ValueError('Could not find snapchat_client_id entry in values.xml file.')
 
             # firebase
             if firebase_config and app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]:
