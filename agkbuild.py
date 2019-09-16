@@ -459,7 +459,7 @@ class AgkCompiler:
         else:
             output_file = os.path.join(project.get_release_folder(
                     f"android_{AgkCompiler.APK_TYPE_NAMES[app_type].lower()}"),
-                    f"{project.name}-%[type]-%[version].apk")
+                    f"{project.name}-%[type]-%[version]{'-%[project_version]' if project.version else ''}.apk")
 
         # permissions
         permission_external_storage = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_WRITE)
@@ -483,6 +483,8 @@ class AgkCompiler:
         # output_file = output_file.replace(r'%[project_name]', str(project.name))  # Not in C++ code.
         output_file = output_file.replace(r'%[version]', str(build_number))
         output_file = output_file.replace(r'%[type]', AgkCompiler.APK_TYPE_NAMES[app_type])
+        if project.version:  # Not in C++ code.
+            output_file = output_file.replace(r'%[project_version]', project.version)
         os.makedirs(os.path.split(output_file)[0], exist_ok=True)
         # check app name
         if not app_name:
