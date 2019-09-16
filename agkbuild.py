@@ -35,7 +35,7 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "0.2"
+__version__ = "0.2.1"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
