@@ -151,6 +151,17 @@ def _validate_url(homepage):
         raise ValueError("The homepage is invalid.")
 
 
+def _flush_input():
+    try:
+        import msvcrt
+        while msvcrt.kbhit():
+            msvcrt.getch()
+    except ImportError:
+        pass
+        # import sys, termios
+        # termios.tcflush(sys.stdin, termios.TCIOFLUSH)
+
+
 class IniFile:
     """Reads and provides access to the values within an INI file."""
     def __init__(self, filename):
@@ -196,7 +207,10 @@ class IniFile:
 
     def __getitem__(self, item) -> str:
         section, key = item
-        return self._sections[section][key]
+        try:
+            return self._sections[section][key]
+        except KeyError:
+            return ""
 
     def __setitem__(self, key, value):
         section, key = key
@@ -480,11 +494,28 @@ class AgkCompiler:
         if "." not in os.path.split(output_file)[1]:
             raise ValueError('The output location must be a file not a directory.')
 
-        # output_file = output_file.replace(r'%[project_name]', str(project.name))  # Not in C++ code.
-        output_file = output_file.replace(r'%[version]', str(build_number))
-        output_file = output_file.replace(r'%[type]', AgkCompiler.APK_TYPE_NAMES[app_type])
         if project.version:  # Not in C++ code.
             output_file = output_file.replace(r'%[project_version]', project.version)
+        # output_file = output_file.replace(r'%[project_name]', str(project.name))  # Not in C++ code.
+        output_file = output_file.replace(r'%[type]', AgkCompiler.APK_TYPE_NAMES[app_type])
+        if not USE_DEFINED_PROJECT_OUTPUT_PATHS:
+            # Check for existing APKs.  Ask user whether to overwrite the greatest build_number or increment.
+            temp_path = os.path.split(output_file)[0]
+            if os.path.exists(temp_path):
+                try:
+                    pattern = f"{project.name}-{AgkCompiler.APK_TYPE_NAMES[app_type]}-([0-9]+)[-.]"
+                    build_number = max([int(re.search(pattern, p).group(1)) for p in os.listdir(temp_path)
+                                        if re.match(pattern, p)])
+                    _flush_input()
+                    response = input(f"An APK with build version {build_number} exists.  "
+                                     f"[O]verwrite (default) or [I]ncrement?")
+                    if response in ["I", "i"]:
+                        print("Incrementing APK build version.")
+                        build_number += 1
+                except ValueError:
+                    pass
+        output_file = output_file.replace(r'%[version]', str(build_number))
+
         os.makedirs(os.path.split(output_file)[0], exist_ok=True)
         # check app name
         if not app_name:
@@ -1296,13 +1327,17 @@ class AgkCompiler:
 class AgkBuild:
     def __init__(self,
                  project_file: str,
-                 platforms: int,
+                 platforms: Platform,
                  project_name: str = None,
                  release_name: str = None,
                  constants: dict = None,
                  include_tags: dict = None,
                  include_files: List[Tuple[str, str]] = None,
                  exclude_media: List[str] = None,
+                 nsis_info: dict = None,
+                 debian_info: dict = None,
+                 create_linux_setup_script: bool = False,
+                 archive: bool = False,
                  **kwargs):
         """
         Creating an instance of this class compiles a project for the specified platforms.
@@ -1335,6 +1370,12 @@ class AgkBuild:
             are moved into 'media_exclude' while building and exported and moved back into 'media' when finished.
         :param archive_output: When true, exported output folders are archived into zip files.
             This parameter has no affect on Android exports.
+        :param nsis_info: When not None, create_nsis_installer is called with these values for each supported platform
+            flag set.
+        :param debian_info: When not None, create_debian_package is called with these values for each supported platform
+            flag set.
+        :param create_linux_setup_script: When True, a setup script will be created in each Linux release folder.
+        :param archive: When True, an archive for each release folder will be made and the release folder removed.
         :param apk_package_name: Overrides the project's APK package name.
         :param apk_keystore_file: Overrides the project's keystore file for Android packages.
         :param apk_keystore_password: Sets the keystore password for exporting Android packages.
@@ -1350,6 +1391,7 @@ class AgkBuild:
 
         print("")  # blank line for cleaner sysout.
         project = AgkProject(project_file)
+        compiler = AgkCompiler()
         self.project = project
         self.version = project.version
         main_code_file = os.path.join(project.base_path, "main.agc")
@@ -1411,18 +1453,26 @@ class AgkBuild:
                             shutil.copy(filename, dst)
 
             # Now compile and export.
-            compiler = AgkCompiler()
             compiler.compile(project)
             for p in [platforms.WINDOWS_86, Platform.WINDOWS_64, Platform.WINDOWS_86_64]:
                 if platforms & p:
                     release_path = compiler.export_windows(project, _Architecture.from_platform(p))
                     copy_include_files(release_path)
                     self.release_paths[p] = release_path
+                    # Post-processing
+                    if nsis_info:
+                        self.create_nsis_installer(p, **nsis_info)
             for p in [platforms.LINUX_86, Platform.LINUX_64, Platform.LINUX_86_64]:
                 if platforms & p:
                     release_path = compiler.export_linux(project, _Architecture.from_platform(p))
                     copy_include_files(release_path)
                     self.release_paths[p] = release_path
+                    # Post-processing
+                    if debian_info and p != Platform.LINUX_86_64:
+                        self.create_debian_package(p, **debian_info)
+                    # NOTE: create_debian_package can remove the release path, so check it again.
+                    if create_linux_setup_script and p in self.release_paths:
+                        self.create_linux_setup_script(p)
             if platforms & Platform.HTML5:
                 release_path = compiler.export_html5(project)
                 copy_include_files(release_path)
@@ -1436,6 +1486,10 @@ class AgkBuild:
             if platforms & Platform.OUYA_APK:
                 release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_OUYA, **kwargs)
                 self.release_paths[Platform.OUYA_APK] = release_path
+
+            if archive and p in self.release_paths and \
+                    p not in [Platform.GOOGLE_APK, Platform.AMAZON_APK, Platform.OUYA_APK]:
+                self.archive(p)
         finally:
             os.replace(backup_code_file, main_code_file)
             # Restore exclude media files back into the media folder.
@@ -1449,6 +1503,8 @@ class AgkBuild:
                                                                                         start=media_exclude_path))
                     os.rename(src_file, dst_file)
             _rmtree(media_exclude_path)
+            # Rebuild in original form.
+            compiler.compile(project)
 
     def create_linux_setup_script(self, platforms: Platform, script_name: str = "setup.sh"):
         """
@@ -1494,11 +1550,12 @@ echo "[setup] Setting executable flag..."
                               section: str = "games",
                               generic_name: str = "Game",
                               comment: str = "A game created with AppGameKit.",
-                              categories: Iterable[str] = ("Game",)
+                              categories: Iterable[str] = ("Game",),
+                              remove_release_folder: bool = False,
                               ):
         """
         Creates a Debian package using the files in a platform's release folder.
-        The release folder is not removed during this process.
+        By default, the release folder is not removed during this process.
 
         By default, the game will be installed to /usr/<usr_subfolder>/<package_name> where usr_subfolder defaults to
         "games".
@@ -1534,6 +1591,7 @@ echo "[setup] Setting executable flag..."
             Defaults to "A game created with AppGameKit."
         :param categories: The categories in which this entry should be shown.  This is used in the package .desktop
             file.  Defaults to ("Game",)
+        :param remove_release_folder: When True, the release folder will be removed after the Debian package is created.
         :return:
         """
         if not email_name:
@@ -1667,6 +1725,9 @@ Categories={";".join(categories)};
                         raise SystemError(f'Windows Packager returned error:\n{error}')
                     if completed_process.returncode:
                         raise SystemError(f'Windows Packager returned code: {completed_process.returncode}')
+                    if remove_release_folder:
+                        _rmtree(release_path)
+                        del self.release_paths[p]
                 finally:
                     _rmtree(temp_path)
 
@@ -1676,10 +1737,11 @@ Categories={";".join(categories)};
                               project_guid: str = None,
                               defines: List[Union[str, Tuple[str, str]]] = None,
                               inline_template: bool = False,
+                              remove_release_folder: bool = False,
                               ):
         """
         Creates a Windows installer from the release folder for the given platforms.
-        The release folder is not removed during this process.
+        By default, the release folder is not removed during this process.
 
         Valid platform flags are `WINDOWS_86`, `WINDOWS_64`, and `WINDOWS_86_64`.
         `WINDOWS_86_64` will create an installer that extracts either the 32- or 64-bit executable depending on the
@@ -1699,6 +1761,7 @@ Categories={";".join(categories)};
             `!define NAME "VALUE"`.
         :param inline_template: When False (the default), the agkbuild.nsi file is added using `!include`.  When True,
             the file is added inline at the bottom of the generated script file.
+        :param remove_release_folder: When True, the release folder will be removed after the NSIS installer is created.
         :return:
         """
         if not developer_name:
@@ -1796,6 +1859,9 @@ Categories={";".join(categories)};
                     raise SystemError(f'Windows Packager returned error:\n{error}')
                 if completed_process.returncode:
                     raise SystemError(f'Windows Packager returned code: {completed_process.returncode}')
+                if remove_release_folder:
+                    _rmtree(release_path)
+                    del self.release_paths[p]
 
     def archive(self, platforms: Platform):
         """

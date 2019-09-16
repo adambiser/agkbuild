@@ -6,40 +6,22 @@ FULL_MEDIA_FILES = ['full.txt']
 INFO_FILES = [('README.txt', '.'),
               ('help\*.*', 'help')]
 
-# This is the regular full version.
-build = AgkBuild(project_file='AGKBuildExample.agk',
-                 include_tags={"demo": "demo-off.agc",
-                               "steam": "steam-off.agc"},
-                 exclude_media=DEMO_MEDIA_FILES,
-                 include_files=INFO_FILES,
-                 apk_sdk_version="5.0",
-                 apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
-                 apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
-                 platforms=WINDOWS_86 | WINDOWS_86_64 | LINUX_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
-                 )
+NSIS_INFO = {
+    "developer_name": "Some Game Company",
+    "homepage": "https://github.com/adambiser/agkbuild",
+    "defines": [
+        ("INSTALLER_ICON", "${PROJECT_ICON}"),  # Change the installer's icon.
 
-# The AgkBuild object has a release_paths attribute that can be used to determine where a release was built and perform
-# additional tasks on it.
-print(build.release_paths)
+        "MUI_HEADERIMAGE",
+        ("MUI_HEADERIMAGE_BITMAP", "images\HeaderImage.bmp"),
+        "MUI_HEADERIMAGE_RIGHT",
 
-build.create_nsis_installer(WINDOWS_86,
-                            developer_name="Some Game Company",
-                            homepage="https://github.com/adambiser/agkbuild",
-                            defines=[
-                                ("INSTALLER_ICON", "${PROJECT_ICON}"),  # Change the installer's icon.
-
-                                "MUI_HEADERIMAGE",
-                                ("MUI_HEADERIMAGE_BITMAP", "images\HeaderImage.bmp"),
-                                "MUI_HEADERIMAGE_RIGHT",
-
-                                ("MUI_WELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
-                                ("MUI_UNWELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
-                            ],
-                            inline_template=True,
-                            )
-
-build.create_linux_setup_script(LINUX_86_64)
-build.archive(LINUX_86_64)
+        ("MUI_WELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
+        ("MUI_UNWELCOMEFINISHPAGE_BITMAP", "images\Welcome.bmp"),
+    ],
+    "inline_template": True,
+    "remove_release_folder": True,
+}
 
 DEB_INFO = {
     "email_name": "Test",
@@ -49,9 +31,24 @@ DEB_INFO = {
                         "further information about the game.\n"
                         "It can contain multiple paragraphs.",
     "application_icon": "linux/AGKBuildExample.png",
+    "remove_release_folder": True,
 }
 
-build.create_debian_package(LINUX_86 | LINUX_64, **DEB_INFO)
+# This is the regular full version.
+AgkBuild(project_file='AGKBuildExample.agk',
+         include_tags={"demo": "demo-off.agc",
+                       "steam": "steam-off.agc"},
+         exclude_media=DEMO_MEDIA_FILES,
+         include_files=INFO_FILES,
+         apk_sdk_version="5.0",
+         apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
+         apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
+         platforms=WINDOWS_86 | WINDOWS_86_64 | LINUX_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
+         nsis_info=NSIS_INFO,
+         debian_info=DEB_INFO,
+         create_linux_setup_script=True,
+         archive=True,
+         )
 
 # This is the full version release for Steam.
 AgkBuild(project_file='AGKBuildExample.agk',
