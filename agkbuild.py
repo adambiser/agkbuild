@@ -441,6 +441,8 @@ class AgkCompiler:
         deep_link = get_value('deep_link')
         google_play_app_id = get_value('play_app_id')
         admob_app_id = get_value('admob_app_id')
+        temp_value = get_value('snapchat_client_id')
+        snapchat_client_id = 0 if temp_value == "" else int(temp_value)
         # permissions
         permission_flags = Permission(int(get_value('permission_flags')))
         # signing
@@ -826,6 +828,11 @@ class AgkCompiler:
                                           rf'\1{admob_app_id}\2', contents)
                 if not count:
                     raise ValueError('Could not find admob_app_id entry in values.xml file.')
+
+            # snapchat client id
+            if app_type == AgkCompiler.APK_TYPE_GOOGLE and snapchat_client_id:
+                contents, count = re.subn(r'(<string name="snap_chat_id">)[^<]+(</string>)',
+                                          rf'\1{snapchat_client_id}\2', contents)
 
             # firebase
             if firebase_config and app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]:
