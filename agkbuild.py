@@ -35,7 +35,7 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
@@ -326,9 +326,6 @@ class AgkCompiler:
 
     SDK_VERSIONS = [
         None,  # 0
-        {'version': '4.1', 'api': 16},
-        {'version': '4.2', 'api': 17},
-        {'version': '4.3', 'api': 18},
         {'version': '4.4', 'api': 19},
         {'version': '5.0', 'api': 21},
         {'version': '5.1', 'api': 22},
@@ -444,7 +441,7 @@ class AgkCompiler:
         app_sdk = kwargs.get('apk_sdk_version')
         if app_sdk:
             app_sdk = next((sdk['api'] for sdk in AgkCompiler.SDK_VERSIONS
-                            if sdk and sdk['version'] == kwargs.get('apk_sdk_version')), None)
+                            if sdk and sdk['version'] == app_sdk), None)
             if not app_sdk:
                 raise ValueError("Unexpected SDK version.")
         else:
@@ -669,6 +666,7 @@ class AgkCompiler:
             if permission_expansion and app_type == AgkCompiler.APK_TYPE_GOOGLE:
                 # new_contents += '    <uses-permission android:name="android.permission.GET_ACCOUNTS" />\n'
                 new_contents += '    <uses-permission android:name="android.permission.CHECK_LICENSE" />\n'
+                new_contents += '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
             if permission_vibrate:
                 new_contents += '    <uses-permission android:name="android.permission.VIBRATE" />\n'
             if permission_record_audio:
@@ -1075,8 +1073,6 @@ class AgkCompiler:
                           "lib/arm64-v8a/libandroid_player.so")
                 zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libandroid_player.so"),
                           "lib/armeabi-v7a/libandroid_player.so")
-                # zfp.write(os.path.join(android_folder, "lib", "x86", "libandroid_player.so"),
-                #           "lib/x86/libandroid_player.so")
 
                 if arcore_mode != ArCoreMode.ARCORE_NONE:
                     # use real ARCore lib
@@ -1084,8 +1080,12 @@ class AgkCompiler:
                               "lib/arm64-v8a/libarcore_sdk.so")
                     zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libarcore_sdk.so"),
                               "lib/armeabi-v7a/libarcore_sdk.so")
-                    # zfp.write(os.path.join(android_folder, "lib", "x86", "libarcore_sdk.so"),
-                    #           "lib/x86/libarcore_sdk.so")
+
+                if snapchat_client_id:
+                    zfp.write(os.path.join(android_folder, "lib", "arm64-v8a", "libpruneau.so"),
+                              "lib/arm64-v8a/libpruneau.so")
+                    zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libpruneau.so"),
+                              "lib/armeabi-v7a/libpruneau.so")
 
                 if app_type != AgkCompiler.APK_TYPE_OUYA:
                     # copy assets for Google and Amazon
