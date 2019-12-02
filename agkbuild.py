@@ -24,7 +24,7 @@ import glob
 from enum import IntEnum, IntFlag, auto
 import math
 import os
-import PIL.Image as Image
+from PIL import Image
 import platform
 import re
 import shutil
@@ -35,7 +35,7 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "0.4"
+__version__ = "2019.11.27"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
@@ -326,6 +326,10 @@ class AgkCompiler:
 
     SDK_VERSIONS = [
         None,  # 0
+        {'version': '4.0.3', 'api': 15},
+        {'version': '4.1', 'api': 16},
+        {'version': '4.2', 'api': 17},
+        {'version': '4.3', 'api': 18},
         {'version': '4.4', 'api': 19},
         {'version': '5.0', 'api': 21},
         {'version': '5.1', 'api': 22},
@@ -636,7 +640,9 @@ class AgkCompiler:
     <uses-feature android:glEsVersion="0x00020000"></uses-feature>
     <uses-sdk android:minSdkVersion="{app_sdk if app_type in [AgkCompiler.APK_TYPE_GOOGLE,
                                                               AgkCompiler.APK_TYPE_AMAZON] else 15}\
-" android:targetSdkVersion="{28 if app_type == AgkCompiler.APK_TYPE_GOOGLE else 15}" />
+" android:targetSdkVersion="{28 if app_type == AgkCompiler.APK_TYPE_GOOGLE 
+            else 22 if app_type == AgkCompiler.APK_TYPE_AMAZON 
+            else 15}" />
     
 '''
             if permission_external_storage:
@@ -1032,7 +1038,7 @@ class AgkCompiler:
                     scale_and_compile_image(icon_image, 24, drawable_ldpi, "icon_white.png")
 
                 # load ouya icon and check size
-                if app_type == AgkCompiler.APK_TYPE_OUYA:
+                if ouya_icon and app_type == AgkCompiler.APK_TYPE_OUYA:
                     icon_image = Image.open(ouya_icon)
                     if icon_image.width != 732 or icon_image.height != 412:
                         raise ValueError('Ouya large icon must be 732x412 pixels.')
