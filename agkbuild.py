@@ -35,7 +35,7 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "2019.11.27"
+__version__ = "2020.04.30"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
@@ -322,11 +322,10 @@ class AgkCompiler:
         Orientation.ORIENTATION_ALL: 'fullSensor',
     }
 
-    ANDROID_JAR = 'android28.jar'
+    ANDROID_JAR = 'android29.jar'
 
     SDK_VERSIONS = [
         None,  # 0
-        {'version': '4.0.3', 'api': 15},
         {'version': '4.1', 'api': 16},
         {'version': '4.2', 'api': 17},
         {'version': '4.3', 'api': 18},
@@ -339,6 +338,7 @@ class AgkCompiler:
         {'version': '8.0', 'api': 26},
         {'version': '8.1', 'api': 27},
         {'version': '9.0', 'api': 28},
+        {'version': '10.0', 'api': 29},
     ]
 
     HTML5_COMMANDS_FOLDER = {
@@ -614,7 +614,7 @@ class AgkCompiler:
         output_file_zip = f'{os.path.splitext(output_file)[0]}.zip'
 
         if not keystore_file:
-            keystore_file = os.path.join(self._data_dir, "android", "debug.keystore")
+            keystore_file = os.path.join(android_folder, "debug.keystore")
             keystore_password = "android"
             alias_name = "androiddebugkey"
             alias_password = "android"
@@ -638,11 +638,11 @@ class AgkCompiler:
       android:versionCode="{str(build_number)}"
       android:versionName="{version_number}" package="{package_name}" android:installLocation="auto">
     <uses-feature android:glEsVersion="0x00020000"></uses-feature>
-    <uses-sdk android:minSdkVersion="{app_sdk if app_type in [AgkCompiler.APK_TYPE_GOOGLE,
-                                                              AgkCompiler.APK_TYPE_AMAZON] else 15}\
-" android:targetSdkVersion="{28 if app_type == AgkCompiler.APK_TYPE_GOOGLE 
+    <uses-sdk android:minSdkVersion="{app_sdk if app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON] 
+            else AgkCompiler.SDK_VERSIONS[1]["api"]}\
+" android:targetSdkVersion="{29 if app_type == AgkCompiler.APK_TYPE_GOOGLE 
             else 22 if app_type == AgkCompiler.APK_TYPE_AMAZON 
-            else 15}" />
+            else 16}" />
     
 '''
             if permission_external_storage:
@@ -808,7 +808,7 @@ class AgkCompiler:
         <meta-data android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@drawable/icon_white" />
         <service android:name="com.google.firebase.messaging.FirebaseMessagingService" 
-            android:exported="true" > 
+            android:exported="false" > 
             <intent-filter android:priority="-500" > 
                 <action android:name="com.google.firebase.MESSAGING_EVENT" /> 
             </intent-filter> 
@@ -970,7 +970,12 @@ class AgkCompiler:
                                                         universal_newlines=True)
                     self._lines = []
                     stderr_lines = _completed_process.stderr.strip().split('\n')
-                    _error = '\n'.join([e for e in stderr_lines if e not in ['Error', 'Done']])
+                    _warnings = '\n'.join([e for e in stderr_lines if e.startswith('aapt2.exe W')])
+                    _error = '\n'.join([e for e in stderr_lines if e not in ['Error', 'Done']
+                                        and not e.startswith('aapt2.exe W')])
+                    # Ignore, but report warnings.
+                    if _warnings:
+                        print(_warnings)
                     if _error:
                         raise SystemError(f'Packaging tool reported the following error(s):\n{_error}')
                     if 'Error' in stderr_lines:
