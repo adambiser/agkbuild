@@ -43,7 +43,8 @@ AgkBuild(project_file='AGKBuildExample.agk',
          apk_sdk_version="5.0",
          apk_app_icon_path=".\\android\\app_icon.png",  # Override with relative path
          apk_notif_icon_path=".\\android\\notification.png",  # Override with relative path
-         platforms=WINDOWS_86 | WINDOWS_86_64 | LINUX_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APK | AMAZON_APK | HTML5,
+         platforms=WINDOWS_86 | WINDOWS_86_64 | LINUX_86 | LINUX_64 | LINUX_86_64 | GOOGLE_APP_BUNDLE | AMAZON_APK | HTML5,
+         # platforms=GOOGLE_APP_BUNDLE,
          nsis_info=NSIS_INFO,
          debian_info=DEB_INFO,
          create_linux_setup_script=True,
@@ -66,6 +67,6 @@ AgkBuild(project_file='AGKBuildExample.agk',
          include_tags={"demo": "demo-off.agc",
                        "steam": "steam-off.agc"},
          exclude_media=FULL_MEDIA_FILES,
-         platforms=WINDOWS_86 | LINUX_86 | GOOGLE_APK,
+         platforms=WINDOWS_86 | LINUX_86 | GOOGLE_APP_BUNDLE,
          archive_output=True,
          )

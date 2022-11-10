@@ -19,9 +19,10 @@ The export_apk and export_html5 functions are based on code found at:
 https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c
 """
 import argparse
+import logging
 from collections import OrderedDict
 import glob
-from enum import IntEnum, IntFlag, auto
+from enum import IntEnum, IntFlag, auto  # as _auto
 import math
 import os
 from PIL import Image
@@ -35,12 +36,30 @@ import textwrap
 from typing import Iterable, List, Tuple, Union
 import zipfile
 
-__version__ = "2020.04.30"
+__version__ = "2022.09.28"
 
 USE_DEFINED_PROJECT_OUTPUT_PATHS = False
 
 # Always ignore these files.
 IGNORE_FILES = ['Thumbs.db']
+_CLEANUP_FILES = True
+
+
+# # Temporary workaround for this issue: https://youtrack.jetbrains.com/issue/PY-53388
+# def auto():
+#     # noinspection PyArgumentList
+#     return _auto()
+
+# logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("agkbuild")
+logger.setLevel(logging.INFO)
+# # logger.setLevel(logging.DEBUG)
+# handler = logging.FileHandler('parse.log', mode="w")
+console_handler = logging.StreamHandler()
+# # formatter = logging.Formatter('%(asctime)s : %(name)s  : %(funcName)s : %(levelname)s : %(message)s')
+formatter = logging.Formatter('%(levelname)s:%(name)s:%(message)s')
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
 
 
 class Platform(IntFlag):
@@ -53,6 +72,7 @@ class Platform(IntFlag):
     LINUX_86_64 = auto()  # Exports both 32- and 64-bit Windows in the same release folder.
     # ANDROID = auto()  # Export as APK using the APK type set within the AGK project file.
     HTML5 = auto()  # Export as HTML5.
+    GOOGLE_APP_BUNDLE = auto()  # Export as Google App Bundle.
     GOOGLE_APK = auto()  # Export as Google Play APK.
     AMAZON_APK = auto()  # Export as Amazon APK.
     OUYA_APK = auto()  # Export as Ouya APK.
@@ -86,7 +106,7 @@ class Permission(IntFlag):
     AGK_ANDROID_PERMISSION_WAKE = 0x004
     AGK_ANDROID_PERMISSION_GPS = 0x008
     AGK_ANDROID_PERMISSION_IAP = 0x010
-    AGK_ANDROID_PERMISSION_EXPANSION = 0x020
+    AGK_ANDROID_PERMISSION_NOTIFY = 0x020
     AGK_ANDROID_PERMISSION_LOCATION = 0x040
     AGK_ANDROID_PERMISSION_PUSH = 0x080
     AGK_ANDROID_PERMISSION_CAMERA = 0x100
@@ -146,12 +166,12 @@ def _is_power_of_2(n):
 
 
 def _validate_url(homepage):
-    if homepage and not re.match(r"http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+",
-                                 homepage):
+    if homepage and not re.match(r"https?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(%[0-9a-fA-F][0-9a-fA-F]))+", homepage):
         raise ValueError("The homepage is invalid.")
 
 
 def _flush_input():
+    console_handler.flush()
     try:
         import msvcrt
         while msvcrt.kbhit():
@@ -162,9 +182,21 @@ def _flush_input():
         # termios.tcflush(sys.stdin, termios.TCIOFLUSH)
 
 
+def _add_folder_to_zip(zfp, folder, arcpath):
+    for root, _, files in os.walk(folder):
+        for file in files:
+            filepath = os.path.join(root, file)
+            zfp.write(filepath, os.path.join(arcpath, os.path.relpath(filepath, folder)))
+
+
+def _where(command):
+    completed_process = subprocess.run(["where", command], stdout=subprocess.PIPE, universal_newlines=True)
+    return completed_process.stdout.split("\n")[0].strip()
+
+
 class IniFile:
     """Reads and provides access to the values within an INI file."""
-    def __init__(self, filename):
+    def __init__(self, filename: str):
         """
         Opens and loads the given INI file
 
@@ -178,7 +210,7 @@ class IniFile:
                 line = line.strip()
                 if not line:
                     continue
-                match = re.match(r'\[(.+)\]', line)
+                match = re.match(r'\[(.+)]', line)
                 if match:
                     section = match.group(1)
                     self._sections[section] = OrderedDict()
@@ -225,7 +257,7 @@ class AgkProject(IniFile):
     """
     def __init__(self, filename):
         super().__init__(filename)
-        print(f"Opening project: {filename}")
+        logger.info(f"Opening project: {filename}")
         self._base_path = os.path.split(os.path.abspath(filename))[0]
         # Name is the file name without extension
         self._name = os.path.splitext(os.path.basename(filename))[0]
@@ -236,7 +268,7 @@ class AgkProject(IniFile):
                 match = re.match(r'#constant\s+VERSION\s+"(.+)"', line)
                 if match:
                     self._version = match.group(1)
-                    print(f"Found project version: {self._version}")
+                    logger.info(f"Found project version: {self._version}")
                     break
 
     @property
@@ -286,8 +318,9 @@ class AgkProject(IniFile):
 
     def get_release_folder(self, platform_name: str, architectures: _Architecture = None):
         """Returns the release folder for the given platform name."""
+        # Keep all android releases in the same folder because build number increments across all releases.
         release_folder = f"{self.safe_name}" \
-                         f"{f'_{self._version}' if self._version else ''}" \
+                         f"{f'_{self._version}' if self._version and not platform_name.startswith('android') else ''}" \
                          f"_{platform_name}" \
                          f"{f'_{str(architectures)}' if architectures else ''}" \
                          f"{f'_{self._release_name}' if self._release_name else ''}"
@@ -310,20 +343,27 @@ class AgkProject(IniFile):
 
 class AgkCompiler:
     """This class is used to compile and export AppGameKit projects."""
-    APK_TYPE_GOOGLE = 0
-    APK_TYPE_AMAZON = 1
-    APK_TYPE_OUYA = 2
+    APK_TYPE_GOOGLE_APP_BUNDLE = 0
+    APK_TYPE_GOOGLE_APK = 1
+    APK_TYPE_AMAZON = 2
+    APK_TYPE_OUYA = 3
 
-    APK_TYPE_NAMES = ['Google', 'Amazon', 'Ouya']
+    APK_TYPE_NAMES = ['Google App Bundle', 'Google APK', 'Amazon', 'Ouya']
+    APK_TYPE_SAFE_NAMES = ['Google', 'Google', 'Amazon', 'Ouya']
 
+    # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1686
     ORIENTATION_NAMES = {
         Orientation.ORIENTATION_LANDSCAPE: 'sensorLandscape',
         Orientation.ORIENTATION_PORTRAIT: 'sensorPortrait',
         Orientation.ORIENTATION_ALL: 'fullSensor',
     }
 
-    ANDROID_JAR = 'android29.jar'
+    # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1429
+    ANDROID_JAR = 'android31.jar'
 
+    # JDK_PATH = None
+
+    # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1082
     SDK_VERSIONS = [
         None,  # 0
         {'version': '4.1', 'api': 16},
@@ -339,8 +379,11 @@ class AgkCompiler:
         {'version': '8.1', 'api': 27},
         {'version': '9.0', 'api': 28},
         {'version': '10.0', 'api': 29},
+        {'version': '11.0', 'api': 30},
+        {'version': '12.0', 'api': 31},
     ]
 
+    # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L542
     HTML5_COMMANDS_FOLDER = {
         Html5Commands.HTML5_COMMANDS_2D_ONLY: {
             True: '2Ddynamic',
@@ -362,10 +405,20 @@ class AgkCompiler:
         self._agk_path = path if path else AgkCompiler._get_appgamekit_path()
         self._agk_compilier_path = verify_path(os.path.join(self._agk_path, 'Tier 1', 'Compiler', 'AGKCompiler.exe'))
         self._data_dir = verify_path(os.path.join(self._agk_path, 'Tier 1', 'Editor', 'data'))
-        self._path_to_aapt2 = verify_path(os.path.join(self._data_dir, 'android', 'aapt2.exe'))
+        # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1410
+        self._path_to_aapt2 = verify_path(os.path.join(self._data_dir, 'android', 'aapt2-bundle.exe'))
         self._path_to_android_jar = verify_path(os.path.join(self._data_dir, 'android', f'{AgkCompiler.ANDROID_JAR}'))
-        self._path_to_jarsigner = verify_path(os.path.join(self._data_dir, 'android', 'jre', 'bin', 'jarsigner.exe'))
+        self._path_to_bundletool = verify_path(os.path.join(self._data_dir, 'android', "bundletool.jar"))
+        self._path_to_apksigner = verify_path(os.path.join(self._data_dir, "android", "apksigner.jar"))
         self._path_to_zipalign = verify_path(os.path.join(self._data_dir, 'android', 'zipalign.exe'))
+        logger.debug(f"agk_path: {self._agk_path}")
+        logger.debug(f"agk_compilier_path: {self._agk_compilier_path}")
+        logger.debug(f"data_dir: {self._data_dir}")
+        logger.debug(f"path_to_aapt2: {self._path_to_aapt2}")
+        logger.debug(f"path_to_android_jar: {self._path_to_android_jar}")
+        logger.debug(f"path_to_bundletool: {self._path_to_bundletool}")
+        logger.debug(f"path_to_apksigner: {self._path_to_apksigner}")
+        logger.debug(f"path_to_zipalign: {self._path_to_zipalign}")
 
     @classmethod
     def _get_appgamekit_path(cls):
@@ -399,8 +452,8 @@ class AgkCompiler:
 
     def compile(self, project: AgkProject):
         """Compiles the project.  An error is raised if compilation fails."""
-        print(f'Compiling project: {project.name}, version: {project.version}'
-              f'{f", release: {project.release_name}" if project.release_name else ""}')
+        logger.info(f'Compiling project: {project.name}, version: {project.version}'
+                    f'{f", release: {project.release_name}" if project.release_name else ""}')
         completed_process = subprocess.run([self._agk_compilier_path, "-agk", "main.agc"],
                                            cwd=project.base_path,
                                            stdout=subprocess.PIPE,
@@ -426,10 +479,29 @@ class AgkCompiler:
             return kwargs.get(f'apk_{name}', project['apk_settings', name])
 
         # app_type = int(get_value('app_type'))
-        print(f'Exporting project as {AgkCompiler.APK_TYPE_NAMES[app_type]} APK')
+        logger.info(f'Exporting project for Android: {AgkCompiler.APK_TYPE_NAMES[app_type]}')
+        # if not AgkCompiler.JDK_PATH:
+        #     raise ValueError('In order to export for Android, the jdkpath must be set to the installation folder for '
+        #                      'Java Development Kit (JDK) 8 or above.')
+
+        path_to_java = _where("java")
+        # TODO Check JAVA_HOME if blank?
+        logger.debug(f"path_to_java: {path_to_java}")
+        if not os.path.exists(path_to_java):
+            raise ValueError('Could not find Java.')
+        # 'Set jdkpath to the installation folder for Java Development Kit (JDK) 8 or above.')
+
+        path_to_jarsigner = _where("jarsigner")  # os.path.join(AgkCompiler.JDK_PATH, 'bin', 'jarsigner.exe')
+        # TODO Check JAVA_HOME if blank?
+        logger.debug(f"path_to_jarsigner: {path_to_jarsigner}")
+        if not os.path.exists(path_to_jarsigner):
+            raise ValueError('Could not find Jarsigner.')
+        # 'Set jdkpath to the installation folder for Java Development Kit (JDK) 8 or above.')
+
         app_name = get_value('app_name')
         package_name = get_value('package_name')
         app_icon = get_value('app_icon_path')
+        app_icon_new = get_value('app_icon_new_path')
         notif_icon = get_value('notif_icon_path')
         ouya_icon = get_value('ouya_icon_path')
         firebase_config = get_value('firebase_config_path')
@@ -473,7 +545,7 @@ class AgkCompiler:
             output_file = project['apk_settings', 'output_path']
         else:
             output_file = os.path.join(project.get_release_folder(
-                    f"android_{AgkCompiler.APK_TYPE_NAMES[app_type].lower()}"),
+                    f"android_{AgkCompiler.APK_TYPE_SAFE_NAMES[app_type].lower()}"),
                     f"{project.name}-%[type]-%[version]{'-%[project_version]' if project.version else ''}.apk")
 
         # permissions
@@ -485,9 +557,15 @@ class AgkCompiler:
         permission_billing = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_IAP)
         permission_push = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_PUSH)
         permission_camera = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_CAMERA)
-        permission_expansion = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_EXPANSION)
+        permission_notifications = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_NOTIFY)
         permission_vibrate = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_VIBRATE)
         permission_record_audio = bool(permission_flags & Permission.AGK_ANDROID_PERMISSION_RECORD_AUDIO)
+
+        # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1164
+        is_google = app_type in (AgkCompiler.APK_TYPE_GOOGLE_APP_BUNDLE, AgkCompiler.APK_TYPE_GOOGLE_APK)
+        is_amazon = app_type == AgkCompiler.APK_TYPE_AMAZON
+        is_ouya = app_type == AgkCompiler.APK_TYPE_OUYA
+        is_bundle = app_type == AgkCompiler.APK_TYPE_GOOGLE_APP_BUNDLE
 
         # START CHECKS
         if not output_file:
@@ -495,29 +573,34 @@ class AgkCompiler:
         if "." not in os.path.split(output_file)[1]:
             raise ValueError('The output location must be a file not a directory.')
 
+        desired_ext = ".aab" if is_bundle else ".apk"
+        output_file = f'{os.path.splitext(output_file)[0]}{desired_ext}'
+
         if project.version:  # Not in C++ code.
             output_file = output_file.replace(r'%[project_version]', project.version)
         # output_file = output_file.replace(r'%[project_name]', str(project.name))  # Not in C++ code.
-        output_file = output_file.replace(r'%[type]', AgkCompiler.APK_TYPE_NAMES[app_type])
+        output_file = output_file.replace(r'%[type]', AgkCompiler.APK_TYPE_SAFE_NAMES[app_type])
         if not USE_DEFINED_PROJECT_OUTPUT_PATHS:
             # Check for existing APKs.  Ask user whether to overwrite the greatest build_number or increment.
             temp_path = os.path.split(output_file)[0]
             if os.path.exists(temp_path):
                 try:
-                    pattern = f"{project.name}-{AgkCompiler.APK_TYPE_NAMES[app_type]}-([0-9]+)[-.]"
+                    pattern = f"{project.name}-{AgkCompiler.APK_TYPE_SAFE_NAMES[app_type]}-([0-9]+)[-.]"
                     build_number = max([int(re.search(pattern, p).group(1)) for p in os.listdir(temp_path)
                                         if re.match(pattern, p)])
                     _flush_input()
-                    response = input(f"An APK with build version {build_number} exists.  "
+                    response = input(f"An output file with build version {build_number} exists.  "
                                      f"[O]verwrite (default) or [I]ncrement?")
                     if response in ["I", "i"]:
-                        print("Incrementing APK build version.")
+                        logger.info("Incrementing APK build version.")
                         build_number += 1
                 except ValueError:
                     pass
         output_file = output_file.replace(r'%[version]', str(build_number))
 
         os.makedirs(os.path.split(output_file)[0], exist_ok=True)
+
+        # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L4554
         # check app name
         if not app_name:
             raise ValueError('You must enter an app name.')
@@ -545,25 +628,30 @@ class AgkCompiler:
         if url_scheme and re.search(r'[:/]', url_scheme):
             raise ValueError('URL scheme must not contain : or /')
         if deep_link:
-            if not re.match('http[s]://', deep_link):
+            if not re.match('https?://', deep_link):
                 raise ValueError('Deep link must start with http:// or https://')
-            if not re.match('http[s]://.+', deep_link):
+            if not re.match('https?://.+', deep_link):
                 raise ValueError('Deep link must have a domain after http:// or https://')
 
         # check icon
         if app_icon:
             if not app_icon.endswith('.png'):
-                raise ValueError('App icon must be a PNG file.')
+                raise ValueError('Legacy app icon must be a PNG file.')
             if not os.path.exists(app_icon):
+                raise ValueError('Could not find legacy app icon location.')
+        if app_icon_new:
+            if not app_icon_new.endswith('.png'):
+                raise ValueError('App icon must be a PNG file.')
+            if not os.path.exists(app_icon_new):
                 raise ValueError('Could not find app icon location.')
         if notif_icon:
             if not notif_icon.endswith('.png'):
                 raise ValueError('Notification icon must be a PNG file.')
             if not os.path.exists(notif_icon):
                 raise ValueError('Could not find notification icon location.')
-        if app_type == AgkCompiler.APK_TYPE_OUYA:
-            if not ouya_icon:
-                raise ValueError('You must select an Ouya large icon.')
+        if is_ouya:
+            # if not ouya_icon:
+            #     raise ValueError('You must select an Ouya large icon.')
             if not ouya_icon.endswith('.png'):
                 raise ValueError('Ouya large icon must be a PNG file.')
             if not os.path.exists(ouya_icon):
@@ -596,10 +684,10 @@ class AgkCompiler:
             if '"' in alias_password:
                 raise ValueError('Alias password cannot contain double quotes.')
 
-        include_firebase = firebase_config and app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]
-        include_push_notify = permission_push and app_type == AgkCompiler.APK_TYPE_GOOGLE
-        include_google_play = google_play_app_id and app_type == AgkCompiler.APK_TYPE_GOOGLE
-        include_admob = admob_app_id and app_type == AgkCompiler.APK_TYPE_GOOGLE
+        include_firebase = firebase_config and (is_google or is_amazon)
+        include_push_notify = permission_push and is_google
+        include_google_play = google_play_app_id and is_google
+        include_admob = admob_app_id and is_google
 
         if include_push_notify and not include_firebase:
             raise ValueError('Push Notifications on Android now use Firebase, so you must include a '
@@ -609,8 +697,14 @@ class AgkCompiler:
         # make temporary folder
         android_folder = os.path.join(self._data_dir, "android")
         temp_folder = os.path.join(project.base_path, "build_tmp")
-        src_folder = [os.path.join(self._data_dir, "android", f'{folder}')
-                      for folder in ["sourceGoogle", "sourceAmazon", "sourceOuya"]][app_type]
+        if is_ouya:
+            src_folder = "sourceOuya"
+        elif is_amazon:
+            src_folder = "sourceAmazon"
+        else:
+            src_folder = "sourceGoogle"
+        src_folder = os.path.join(self._data_dir, "android", f'{src_folder}')
+        logger.debug(f"src_folder: {src_folder}")
         output_file_zip = f'{os.path.splitext(output_file)[0]}.zip'
 
         if not keystore_file:
@@ -625,10 +719,17 @@ class AgkCompiler:
         if platform.system() == 'Windows':
             keystore_file = keystore_file.replace('/', '\\')
 
-        try:
+        def cleanup_files():
+            if os.path.exists(output_file_zip):
+                os.remove(output_file_zip)
             _rmtree(temp_folder)
+
+        try:
+            cleanup_files()  # _rmtree(temp_folder)
+            # copy android export files to tmp folder
             shutil.copytree(src_folder, temp_folder)
 
+            # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L1598
             # edit AndroidManifest.xml
             manifest_file = os.path.join(temp_folder, "AndroidManifest.xml")
             with open(manifest_file, 'r') as fp:
@@ -638,13 +739,10 @@ class AgkCompiler:
       android:versionCode="{str(build_number)}"
       android:versionName="{version_number}" package="{package_name}" android:installLocation="auto">
     <uses-feature android:glEsVersion="0x00020000"></uses-feature>
-    <uses-sdk android:minSdkVersion="{app_sdk if app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON] 
-            else AgkCompiler.SDK_VERSIONS[1]["api"]}\
-" android:targetSdkVersion="{29 if app_type == AgkCompiler.APK_TYPE_GOOGLE 
-            else 22 if app_type == AgkCompiler.APK_TYPE_AMAZON 
-            else 16}" />
+    <uses-sdk android:minSdkVersion="{app_sdk if (is_google or is_amazon) else AgkCompiler.SDK_VERSIONS[1]["api"]}\
+" android:targetSdkVersion="{16 if is_ouya else 31}" />
     
-'''
+'''  # 31 if is_google else 22 if is_amazon else 16
             if permission_external_storage:
                 new_contents += '    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />'
             if permission_internet:
@@ -655,24 +753,24 @@ class AgkCompiler:
 '''
             if permission_wake:
                 new_contents += '    <uses-permission android:name="android.permission.WAKE_LOCK" />\n'
-            if permission_location_coarse and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                new_contents += '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
-            if permission_location_fine and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                new_contents += '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
-            if permission_billing and app_type == AgkCompiler.APK_TYPE_GOOGLE:  # OUYA?
-                new_contents += '    <uses-permission android:name="android.permission.BILLING" />\n'
+            if is_google:
+                if permission_location_coarse:
+                    new_contents += '    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />\n'
+                if permission_location_fine:
+                    new_contents += '    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />\n'
+                if permission_billing:
+                    new_contents += '    <uses-permission android:name="android.permission.BILLING" />\n'
+                if permission_push:
+                    new_contents += f'    <permission android:name="{package_name}.permission.C2D_MESSAGE" ' \
+                                    f'android:protectionLevel="signature" />\n' \
+                                    f'    <uses-permission android:name="{package_name}.permission.C2D_MESSAGE" />\n'
+                if google_play_app_id or permission_push:
+                    new_contents += '    <uses-permission ' \
+                                    'android:name="com.google.android.c2dm.permission.RECEIVE" />\n'
             if permission_camera:
                 new_contents += '    <uses-permission android:name="android.permission.CAMERA" />\n'
-            if (google_play_app_id or permission_push) and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                new_contents += '    <uses-permission android:name="com.google.android.c2dm.permission.RECEIVE" />\n'
-            if permission_push and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                new_contents += f'    <permission android:name="{package_name}.permission.C2D_MESSAGE"' \
-                                f'        android:protectionLevel="signature" />\n' \
-                                f'    <uses-permission android:name="{package_name}.permission.C2D_MESSAGE" />\n'
-            if permission_expansion and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                # new_contents += '    <uses-permission android:name="android.permission.GET_ACCOUNTS" />\n'
-                new_contents += '    <uses-permission android:name="android.permission.CHECK_LICENSE" />\n'
-                new_contents += '    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />\n'
+            if permission_push or permission_notifications:
+                new_contents += '    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />\n'
             if permission_vibrate:
                 new_contents += '    <uses-permission android:name="android.permission.VIBRATE" />\n'
             if permission_record_audio:
@@ -682,6 +780,14 @@ class AgkCompiler:
             if arcore_mode == ArCoreMode.ARCORE_REQUIRED:
                 new_contents += '    <uses-feature android:name="android.hardware.camera.ar" android:required="true" />'
 
+            # package queries
+            queries = ''
+            if snapchat_client_id:
+                queries += '<package android:name="com.snapchat.android" />\n'
+            if arcore_mode > ArCoreMode.ARCORE_NONE:
+                queries += '<package android:name="com.google.ar.core" />\n'
+            contents = re.sub(r'<!--ADDITIONAL_QUERIES-->', queries, contents)
+
             # replace orientation
             contents = re.sub(r'screenOrientation="fullSensor"',
                               f'screenOrientation="{AgkCompiler.ORIENTATION_NAMES[orientation]}"', contents)
@@ -690,7 +796,7 @@ class AgkCompiler:
             filters = ''
             if url_scheme:
                 filters += f'''
-    <intent-filter>
+    <intent-filter android:autoVerify="true">
         <action android:name="android.intent.action.VIEW" />
         <category android:name="android.intent.category.DEFAULT" />
         <category android:name="android.intent.category.BROWSABLE" />
@@ -707,15 +813,15 @@ class AgkCompiler:
                     path = match.group(3)
                 if scheme:
                     filters += f'''
-        <intent-filter>
+        <intent-filter android:autoVerify="true">
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.DEFAULT" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="{scheme}"'''
                 if host:
-                    filters += ' android:host="{host}"'
+                    filters += f' android:host="{host}"'
                     if path:
-                        filters += ' android:pathPrefix="{path}"'
+                        filters += f' android:pathPrefix="{path}"'
                 filters += ''' />
         </intent-filter>'''
 
@@ -725,15 +831,9 @@ class AgkCompiler:
 
             # write the rest of the manifest file
             new_contents += contents
-            if permission_expansion and app_type == AgkCompiler.APK_TYPE_GOOGLE:
-                new_contents += '''
-        <service android:name="com.google.android.vending.expansion.downloader.impl.DownloaderService"
-            android:enabled="true"/>
-        <receiver android:name="com.google.android.vending.expansion.downloader.impl.DownloaderService$AlarmReceiver"
-            android:enabled="true"/>'''
 
             # Google sign in
-            if app_type == AgkCompiler.APK_TYPE_GOOGLE:
+            if is_google:
                 new_contents += '''
         <activity android:name="com.google.android.gms.auth.api.signin.internal.SignInHubActivity"
             android:excludeFromRecents="true"
@@ -745,11 +845,17 @@ class AgkCompiler:
     '''
 
             # IAP Purchase Activity
-            if permission_billing and app_type == AgkCompiler.APK_TYPE_GOOGLE:
+            if permission_billing and is_google:
                 new_contents += '''
-        <activity android:name="com.google.android.gms.ads.purchase.InAppPurchaseActivity"
-            android:theme="@style/Theme.IAPTheme" />'''
-
+                <meta-data
+                    android:name="com.google.android.play.billingclient.version"
+                    android:value="5.0.0" />
+                <activity
+                    android:name="com.android.billingclient.api.ProxyBillingActivity"
+                    android:configChanges="keyboard|keyboardHidden|screenLayout|screenSize|orientation"
+                    android:exported="false"
+                    android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+'''
             # Google API Activity - for Game Services
             if include_google_play:
                 new_contents += '''
@@ -761,6 +867,7 @@ class AgkCompiler:
             if include_google_play or include_firebase or include_push_notify:
                 new_contents += f'''
     <provider android:authorities="{package_name}.firebaseinitprovider"
+        android:directBootAware="true"
         android:name="com.google.firebase.provider.FirebaseInitProvider"
         android:exported="false"
         android:initOrder="100" />'''
@@ -784,14 +891,33 @@ class AgkCompiler:
             android:permission="android.permission.BIND_JOB_SERVICE" />
         <service
             android:name="com.google.firebase.components.ComponentDiscoveryService"
+            android:directBootAware="true"
             android:exported="false" >
             <meta-data
                 android:name="com.google.firebase.components:com.google.firebase.analytics.connector.internal.AnalyticsConnectorRegistrar"
                 android:value="com.google.firebase.components.ComponentRegistrar" />
             <meta-data
-                android:name="com.google.firebase.components:com.google.firebase.iid.Registrar"
+                android:name="com.google.firebase.components:com.google.firebase.datatransport.TransportRegistrar"
                 android:value="com.google.firebase.components.ComponentRegistrar" />
-        </service>'''
+            <meta-data
+                android:name="com.google.firebase.components:com.google.firebase.installations.FirebaseInstallationsRegistrar"
+                android:value="com.google.firebase.components.ComponentRegistrar" />
+        </service>
+        <service
+            android:name="com.google.android.datatransport.runtime.backends.TransportBackendDiscovery"
+            android:exported="false" >
+            <meta-data
+                android:name="backend:com.google.android.datatransport.cct.CctBackendFactory"
+                android:value="cct" />
+        </service>
+        <service
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.JobInfoSchedulerService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" >
+        </service>
+        <receiver		
+            android:name="com.google.android.datatransport.runtime.scheduling.jobscheduling.AlarmManagerSchedulerBroadcastReceiver"
+            android:exported="false" />'''
 
             if include_firebase or include_push_notify:
                 new_contents += '''
@@ -837,8 +963,8 @@ class AgkCompiler:
             android:theme="@android:style/Theme.Material.Light.Dialog.Alert" />'''
 
             new_contents += '''
-        </application>
-    </manifest>
+    </application>
+</manifest>
     '''
             # write new Android Manifest.xml file
             with open(manifest_file, 'w') as fp:
@@ -853,28 +979,28 @@ class AgkCompiler:
             if not count:
                 raise ValueError('Could not find app_name entry in values.xml file.')
 
-            if app_type == AgkCompiler.APK_TYPE_GOOGLE and google_play_app_id:
+            if is_google and google_play_app_id:
                 contents, count = re.subn(r'(<string name="games_app_id">)[^<]+(</string>)',
                                           rf'\1{google_play_app_id}\2', contents)
                 if not count:
                     raise ValueError('Could not find games_app_id entry in values.xml file.')
 
             # admob app id
-            if app_type == AgkCompiler.APK_TYPE_GOOGLE and admob_app_id:
+            if is_google and admob_app_id:
                 contents, count = re.subn(r'(<string name="admob_app_id">)[^<]+(</string>)',
                                           rf'\1{admob_app_id}\2', contents)
                 if not count:
                     raise ValueError('Could not find admob_app_id entry in values.xml file.')
 
             # snapchat client id
-            if app_type == AgkCompiler.APK_TYPE_GOOGLE and snapchat_client_id:
+            if is_google and snapchat_client_id:
                 contents, count = re.subn(r'(<string name="snap_chat_id">)[^<]+(</string>)',
                                           rf'\1{snapchat_client_id}\2', contents)
                 if not count:
                     raise ValueError('Could not find snapchat_client_id entry in values.xml file.')
 
             # firebase
-            if firebase_config and app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]:
+            if firebase_config and (is_google or is_amazon):
                 # read json values
                 with open(firebase_config, 'r') as fp:
                     # contents_other = '\n'.join(fp.readlines())
@@ -906,8 +1032,8 @@ class AgkCompiler:
                 # if the config file contains multiple Android apps then there will be multiple mobilesdk_app_id's,
                 # and only the corect one will work
                 # look for the corresponding package_name that matches this export
-                client = next([client for client in config['client']
-                               if client['client_info']['android_client_info']['package_name'] == package_name], None)
+                client = next((client for client in config['client']
+                               if client['client_info']['android_client_info']['package_name'] == package_name), None)
                 if not client:
                     raise ValueError(f'Could not find client entry for android package_name "{package_name}"'
                                      f' in the Firebase config file.')
@@ -970,12 +1096,12 @@ class AgkCompiler:
                                                         universal_newlines=True)
                     self._lines = []
                     stderr_lines = _completed_process.stderr.strip().split('\n')
-                    _warnings = '\n'.join([e for e in stderr_lines if e.startswith('aapt2.exe W')])
+                    _warnings = '\n'.join([e for e in stderr_lines if e.startswith('aapt2-bundle.exe W')])
                     _error = '\n'.join([e for e in stderr_lines if e not in ['Error', 'Done']
-                                        and not e.startswith('aapt2.exe W')])
+                                        and not e.startswith('aapt2-bundle.exe W')])
                     # Ignore, but report warnings.
                     if _warnings:
-                        print(_warnings)
+                        logger.info(_warnings)
                     if _error:
                         raise SystemError(f'Packaging tool reported the following error(s):\n{_error}')
                     if 'Error' in stderr_lines:
@@ -989,26 +1115,37 @@ class AgkCompiler:
                     # If size is an int, make it square.
                     if isinstance(size, int):
                         size = (size, size)
-                    scaled_image = image.resize(size, Image.LANCZOS)
-                    scaled_image.save(os.path.join(temp_folder, "resOrig", folder, filename), 'PNG')
+                    scaled_image = image.resize(size, Image.Resampling.LANCZOS)
+                    image_file = os.path.join(temp_folder, "resOrig", folder, filename)
+                    os.makedirs(os.path.split(image_file)[0], exist_ok=True)
+                    scaled_image.save(image_file, 'PNG')
                     aapt2.write(f"compile\n-o\nresMerged\nresOrig/{folder}/{filename}\n\n")
+
+                # Adaptive icon
+                if app_icon_new and not is_ouya:
+                    icon_image = Image.open(app_icon_new)
+                    mipmap_folder = ["mipmap-xxxhdpi", "mipmap-xxhdpi", "mipmap-xhdpi", "mipmap-hdpi", "mipmap-mdpi"]
+                    icon_size = [432, 324, 216, 162, 108]
+                    main_icon = "ic_launcher_foreground.png"
+                    for i in range(len(mipmap_folder)):
+                        scale_and_compile_image(icon_image, icon_size[i], mipmap_folder[i], main_icon)
 
                 # load icon file
                 if app_icon:
                     icon_image = Image.open(app_icon)
                     # scale it and save it
-                    if app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]:
+                    if is_google or is_amazon:
                         # 192x192
-                        scale_and_compile_image(icon_image, 192, "drawable-xxxhdpi", "icon.png")
+                        scale_and_compile_image(icon_image, 192, "mipmap-xxxhdpi", "ic_launcher.png")
                         # 144x144
-                        scale_and_compile_image(icon_image, 144, "drawable-xxhdpi", "icon.png")
+                        scale_and_compile_image(icon_image, 144, "mipmap-xxhdpi", "ic_launcher.png")
 
-                    drawable_xhdpi = "drawable-xhdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-xhdpi"
-                    drawable_hdpi = "drawable-hdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-hdpi"
-                    drawable_mdpi = "drawable-mdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-mdpi"
-                    drawable_ldpi = "drawable-ldpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-ldpi"
+                    drawable_xhdpi = "drawable-xhdpi-v4" if is_ouya else "mipmap-xhdpi"
+                    drawable_hdpi = "drawable-hdpi-v4" if is_ouya else "mipmap-hdpi"
+                    drawable_mdpi = "drawable-mdpi-v4" if is_ouya else "mipmap-mdpi"
+                    drawable_ldpi = "drawable-ldpi-v4" if is_ouya else "mipmap-ldpi"
 
-                    main_icon = "app_icon.png" if app_type == AgkCompiler.APK_TYPE_OUYA else "icon.png"
+                    main_icon = "app_icon.png" if is_ouya else "ic_launcher.png"
 
                     # 96x96
                     scale_and_compile_image(icon_image, 96, drawable_xhdpi, main_icon)
@@ -1020,7 +1157,7 @@ class AgkCompiler:
                     scale_and_compile_image(icon_image, 36, drawable_ldpi, main_icon)
 
                 # load notification icon file
-                if notif_icon and app_type in [AgkCompiler.APK_TYPE_GOOGLE, AgkCompiler.APK_TYPE_AMAZON]:
+                if notif_icon and (is_google or is_amazon):
                     icon_image = Image.open(notif_icon)
                     # scale it and save it
                     # 96x96
@@ -1028,10 +1165,12 @@ class AgkCompiler:
                     # 72x72
                     scale_and_compile_image(icon_image, 72, "drawable-xxhdpi", "icon_white.png")
 
-                    drawable_xhdpi = "drawable-xhdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-xhdpi"
-                    drawable_hdpi = "drawable-hdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-hdpi"
-                    drawable_mdpi = "drawable-mdpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-mdpi"
-                    drawable_ldpi = "drawable-ldpi-v4" if app_type == AgkCompiler.APK_TYPE_OUYA else "drawable-ldpi"
+                    # TODO Why is is_ouya checked here when is_google and is_amazon are checked above?
+                    # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L2801
+                    drawable_xhdpi = "drawable-xhdpi-v4" if is_ouya else "drawable-xhdpi"
+                    drawable_hdpi = "drawable-hdpi-v4" if is_ouya else "drawable-hdpi"
+                    drawable_mdpi = "drawable-mdpi-v4" if is_ouya else "drawable-mdpi"
+                    drawable_ldpi = "drawable-ldpi-v4" if is_ouya else "drawable-ldpi"
 
                     # 48x48
                     scale_and_compile_image(icon_image, 48, drawable_xhdpi, "icon_white.png")
@@ -1043,7 +1182,7 @@ class AgkCompiler:
                     scale_and_compile_image(icon_image, 24, drawable_ldpi, "icon_white.png")
 
                 # load ouya icon and check size
-                if ouya_icon and app_type == AgkCompiler.APK_TYPE_OUYA:
+                if ouya_icon and is_ouya:
                     icon_image = Image.open(ouya_icon)
                     if icon_image.width != 732 or icon_image.height != 412:
                         raise ValueError('Ouya large icon must be 732x412 pixels.')
@@ -1059,7 +1198,8 @@ class AgkCompiler:
                             f"--manifest\n{temp_folder}/AndroidManifest.xml\n" 
                             f"-o\n{output_file}\n"
                             f"--auto-add-overlay\n"
-                            f"--no-version-vectors\n", False)
+                            f"--no-version-vectors\n"
+                            + ("--proto-format\n" if is_bundle else ""), False)
 
                 merged_path = os.path.join(temp_folder, "resMerged")
                 for root, _, files in os.walk(merged_path):
@@ -1075,11 +1215,55 @@ class AgkCompiler:
             if not os.path.exists(output_file):
                 raise SystemError('Failed to write output files, check that your project directory is not in a write '
                                   'protected location.')
+            # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L2887
             os.replace(output_file, output_file_zip)
+
+            if is_bundle:
+                bundle_folder = os.path.join(project.base_path, "build_bundle")
+
+                def cleanup_bundle_files():
+                    _rmtree(bundle_folder)
+
+                cleanup_bundle_files()  # In case _CLEANUP_FILES is False.
+                try:
+                    # need to extract and recreate zip file to move AndroidManifest.xml file
+                    os.makedirs(bundle_folder, exist_ok=True)
+                    with zipfile.ZipFile(output_file_zip, 'r') as zfp:
+                        zfp.extractall(bundle_folder)
+                        zfp.extract("AndroidManifest.xml", bundle_folder)
+                    old_manifest_path = os.path.join(bundle_folder, "AndroidManifest.xml")
+                    new_manifest_path = os.path.join(bundle_folder, "manifest", "AndroidManifest.xml")
+                    os.makedirs(os.path.join(bundle_folder, "manifest"), exist_ok=True)
+                    os.rename(old_manifest_path, new_manifest_path)
+                    os.remove(output_file_zip)
+                    with zipfile.ZipFile(output_file_zip, 'a', compression=zipfile.ZIP_DEFLATED) as zfp:
+                        _add_folder_to_zip(zfp, bundle_folder, "")
+                finally:
+                    if _CLEANUP_FILES:
+                        cleanup_bundle_files()
 
             # open APK as a zip file
             with zipfile.ZipFile(output_file_zip, 'a', compression=zipfile.ZIP_DEFLATED) as zfp:
-                zfp.write(os.path.join(src_folder, "classes.dex"), "classes.dex")
+                zfp.write(os.path.join(src_folder, "classes.dex"), "dex/classes.dex" if is_bundle else "classes.dex")
+                zip_add_file = os.path.join(src_folder, "classes2.dex")
+                if os.path.exists(zip_add_file):
+                    zfp.write(zip_add_file, "dex/classes2.dex" if is_bundle else "classes2.dex")
+                zip_add_file = os.path.join(src_folder, "classes3.dex")
+                if os.path.exists(zip_add_file):
+                    zfp.write(zip_add_file, "dex/classes3.dex" if is_bundle else "classes3.dex")
+                zip_add_file = os.path.join(src_folder, "com")
+                if os.path.exists(zip_add_file):
+                    _add_folder_to_zip(zfp, zip_add_file, "root/com" if is_bundle else "com")
+                zip_add_file = os.path.join(src_folder, "kotlin")
+                if os.path.exists(zip_add_file):
+                    _add_folder_to_zip(zfp, zip_add_file, "root/kotlin" if is_bundle else "kotlin")
+                zip_add_file = os.path.join(src_folder, "okhttp3")
+                if os.path.exists(zip_add_file):
+                    _add_folder_to_zip(zfp, zip_add_file, "root/okhttp3" if is_bundle else "okhttp3")
+                zip_add_file = os.path.join(src_folder, "extra_root")
+                if os.path.exists(zip_add_file):
+                    _add_folder_to_zip(zfp, zip_add_file, "root" if is_bundle else "")
+
                 zfp.write(os.path.join(android_folder, "lib", "arm64-v8a", "libandroid_player.so"),
                           "lib/arm64-v8a/libandroid_player.so")
                 zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libandroid_player.so"),
@@ -1098,13 +1282,10 @@ class AgkCompiler:
                     zfp.write(os.path.join(android_folder, "lib", "armeabi-v7a", "libpruneau.so"),
                               "lib/armeabi-v7a/libpruneau.so")
 
-                if app_type != AgkCompiler.APK_TYPE_OUYA:
-                    # copy assets for Google and Amazon
-                    assets_folder = os.path.join(android_folder, "assets")
-                    for root, _, files in os.walk(assets_folder):
-                        for file in files:
-                            filepath = os.path.join(root, file)
-                            zfp.write(filepath, f'assets/{os.path.relpath(filepath, assets_folder)}')
+                # copy assets
+                zip_add_file = os.path.join(src_folder, "assets")
+                if os.path.exists(zip_add_file):
+                    _add_folder_to_zip(zfp, zip_add_file, "assets")
 
                 # copy in media files
                 media_folder = os.path.join(project.base_path, "media")
@@ -1115,19 +1296,43 @@ class AgkCompiler:
                         filepath = os.path.join(root, file)
                         zfp.write(filepath, f'assets/media/{os.path.relpath(filepath, media_folder)}')
 
-            completed_process = subprocess.run([self._path_to_jarsigner,
-                                                "-sigalg", "MD5withRSA",
-                                                "-digestalg", "SHA1",
-                                                "-storepass", keystore_password,
-                                                "-keystore", keystore_file,
-                                                output_file_zip, alias_name,
-                                                "-keypass", alias_password],
+            # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L3116
+            if is_bundle:
+                args = [path_to_java,
+                        "-jar", self._path_to_bundletool, "build-bundle",
+                        "--modules", output_file_zip]
+                mapping_file_path = os.path.join(src_folder, "mapping", "mapping.txt")
+                if os.path.exists(mapping_file_path):
+                    args.extend(["--metadata-file",
+                                 f"com.android.tools.build.obfuscation/proguard.map:{mapping_file_path}"])
+                args.extend(["--output", output_file])
+                completed_process = subprocess.run(args,
+                                                   cwd=temp_folder,
+                                                   stdout=subprocess.PIPE,
+                                                   universal_newlines=True)
+                errors = completed_process.stdout.strip()
+                if completed_process.returncode and errors:
+                    raise SystemError(f'Failed to run bundletool.\n{errors}')
+
+            # https://github.com/TheGameCreators/AGKIDE/blob/master/src/project.c#L3205
+            # sign apk
+            args = [path_to_jarsigner]
+            if not is_bundle:
+                args.extend(["-sigalg", "MD5withRSA",
+                             "-digestalg", "SHA1"])
+            args.extend(["-storepass", keystore_password,
+                         "-keystore", keystore_file])
+            args.append(output_file if is_bundle else output_file_zip)
+            args.extend([alias_name,
+                         "-keypass", alias_password])
+            completed_process = subprocess.run(args,
                                                cwd=temp_folder,
                                                stdout=subprocess.PIPE,
+                                               # stderr=subprocess.PIPE,
                                                universal_newlines=True)
             # jarsigner reports errors in stdout.
             errors = completed_process.stdout.strip()
-            if errors:
+            if completed_process.returncode and "jar signed" not in errors:
                 raise SystemError(f'Failed to sign APK, is your keystore password and alias correct?\n{errors}')
 
             # align apk
@@ -1137,12 +1342,31 @@ class AgkCompiler:
                                                universal_newlines=True)
             # zipalign reports errors in stdout.
             error = completed_process.stdout.strip()
-            if error:
+            if completed_process.returncode and error:
                 raise SystemError(f'Zip align tool returned error: {error}')
+
+            if not is_bundle:
+                # sign with V2 signature
+                args = [path_to_java,
+                        "-jar", self._path_to_apksigner, "sign",
+                        "--ks", keystore_file,
+                        "--ks-pass", f'pass:{keystore_password}',
+                        "--ks-key-alias", alias_name,
+                        "--key-pass", f'pass:{alias_password}',
+                        output_file]
+                completed_process = subprocess.run(args,
+                                                   cwd=temp_folder,
+                                                   stdout=subprocess.PIPE,
+                                                   universal_newlines=True)
+                # jarsigner reports errors in stdout.
+                errors = completed_process.stdout.strip()
+                if completed_process.returncode and errors:
+                    raise SystemError(f'Failed to sign APK with apksigner, '
+                                      f'is your keystore password and alias correct?\n{errors}')
+
         finally:
-            if os.path.exists(output_file_zip):
-                os.remove(output_file_zip)
-            _rmtree(temp_folder)
+            if _CLEANUP_FILES:
+                cleanup_files()
         return output_file
 
     def export_html5(self, project: AgkProject, **kwargs):
@@ -1155,7 +1379,7 @@ class AgkCompiler:
         def get_value(name):
             return kwargs.get(f'html5_{name}', project['html5_settings', name])
 
-        print('Exporting project as HTML5')
+        logger.info('Exporting project as HTML5')
         commands_used = Html5Commands(int(get_value('commands_used')))
         dynamic_memory = bool(get_value('dynamic_memory'))
         if USE_DEFINED_PROJECT_OUTPUT_PATHS:
@@ -1276,7 +1500,7 @@ class AgkCompiler:
         :param architectures: The OS architectures to export for.
         :return: The path to the export folder.
         """
-        print(f'Exporting project for Linux: {str(architectures)}')
+        logger.info(f'Exporting project for Linux: {str(architectures)}')
         output_folder = project.get_release_folder("linux", architectures)
         _rmtree(output_folder)
         os.makedirs(output_folder)
@@ -1305,7 +1529,7 @@ class AgkCompiler:
         :param architectures: The OS architectures to export for.
         :return: The path to the export folder.
         """
-        print(f'Exporting project for Windows: {str(architectures)}')
+        logger.info(f'Exporting project for Windows: {str(architectures)}')
         output_folder = project.get_release_folder('windows', architectures)
         _rmtree(output_folder)
         os.makedirs(output_folder, exist_ok=False)
@@ -1376,11 +1600,11 @@ class AgkBuild:
             This is a list of tuples where each tuple has two values, the first value is the path to the file on the
             system now (relative to the project folder) and the second value is the folder name for the file within the
             release folder.
-            This parameter has no affect on Android exports.
+            This parameter has no effect on Android exports.
         :param exclude_media: List of file paths relative to the 'media' folder to be excluded when building.  The files
             are moved into 'media_exclude' while building and exported and moved back into 'media' when finished.
         :param archive_output: When true, exported output folders are archived into zip files.
-            This parameter has no affect on Android exports.
+            This parameter has no effect on Android exports.
         :param nsis_info: When not None, create_nsis_installer is called with these values for each supported platform
             flag set.
         :param debian_info: When not None, create_debian_package is called with these values for each supported platform
@@ -1397,10 +1621,12 @@ class AgkBuild:
             raise ValueError('The "platforms" value must be a value of the Platform flags.')
         if exclude_media and not isinstance(exclude_media, (list, set)):
             raise ValueError('The "exclude_media" value must be a list or set of file names.')
+        if platforms & Platform.GOOGLE_APP_BUNDLE and platforms & Platform.GOOGLE_APK:
+            raise ValueError('The "platforms" value can include GOOGLE_APP_BUNDLE or GOOGLE_APK, but not both.')
 
         self.release_paths = {}
 
-        print("")  # blank line for cleaner sysout.
+        logger.info("")  # blank line for cleaner sysout.
         project = AgkProject(project_file)
         compiler = AgkCompiler()
         self.project = project
@@ -1491,8 +1717,11 @@ class AgkBuild:
                 release_path = compiler.export_html5(project)
                 copy_include_files(release_path)
                 self.release_paths[Platform.HTML5] = release_path
+            if platforms & Platform.GOOGLE_APP_BUNDLE:
+                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE_APP_BUNDLE, **kwargs)
+                self.release_paths[Platform.GOOGLE_APP_BUNDLE] = release_path
             if platforms & Platform.GOOGLE_APK:
-                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE, **kwargs)
+                release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_GOOGLE_APK, **kwargs)
                 self.release_paths[Platform.GOOGLE_APK] = release_path
             if platforms & Platform.AMAZON_APK:
                 release_path = compiler.export_apk(project, app_type=AgkCompiler.APK_TYPE_AMAZON, **kwargs)
@@ -1535,7 +1764,7 @@ class AgkBuild:
             if platforms & p:
                 if p not in [Platform.LINUX_86, Platform.LINUX_64, Platform.LINUX_86_64]:
                     raise ValueError("Only Linux releases can have setup.sh files.")
-                print(f"Adding setup.sh script for {p.name}")
+                logger.info(f"Adding setup.sh script for {p.name}")
                 # Must be written with Linux newlines.
                 with open(os.path.join(self.release_paths[p], script_name), "w", newline="\n") as fp:
                     fp.write('''#!/bin/bash
@@ -1664,7 +1893,7 @@ echo "[setup] Setting executable flag..."
             if platforms & p:
                 if p not in [Platform.LINUX_86, Platform.LINUX_64]:
                     raise ValueError(f"Creating a Debian package for this platform is supported: {p.name}")
-                print(f"Creating Debian package for {p.name}")
+                logger.info(f"Creating Debian package for {p.name}")
                 release_path = self.release_paths[p]
                 installed_size = math.ceil(_get_folder_size(release_path) / 1024)
                 executable = f"{self.project.safe_name}{'32' if p == Platform.LINUX_86 else '64'}"
@@ -1791,7 +2020,7 @@ Categories={";".join(categories)};
             if platforms & p:
                 if p not in [Platform.WINDOWS_86, Platform.WINDOWS_64, Platform.WINDOWS_86_64]:
                     raise ValueError(f"Creating a Nullsoft Installer for this platform is supported: {p.name}")
-                print(f"Creating a Nullsoft Installer for {p.name}")
+                logger.info(f"Creating a Nullsoft Installer for {p.name}")
                 release_path = self.release_paths[p]
                 script_file = self.project.get_nsis_script_path(p)
                 with open(script_file, "w") as fp:
@@ -1890,7 +2119,7 @@ Categories={";".join(categories)};
             if platforms & p:
                 if p in [Platform.GOOGLE_APK, Platform.AMAZON_APK, Platform.OUYA_APK]:
                     raise ValueError("Android APK releases are already archives.")
-                print(f"Archiving {p.name}")
+                logger.info(f"Archiving {p.name}")
                 release_path = self.release_paths[p]
                 zip_path = f"{release_path}.zip"
                 with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zfp:
@@ -1906,7 +2135,7 @@ Categories={";".join(categories)};
 
 
 def _exec_build_tasks(filename):
-    print(f"Starting agkbuild: {filename}")
+    logger.info(f"Starting agkbuild: {filename}")
     cwd, filename = os.path.split(os.path.abspath(filename))
     os.chdir(cwd)
     import importlib.machinery
@@ -1929,8 +2158,11 @@ def _exec_build_tasks(filename):
 
 def _main():
     parser = argparse.ArgumentParser(description='An AppGameKit build automation script.')
-    parser.add_argument('buildfile', metavar='buildfile', type=str, help='The agkbuild file to process.')
+    parser.add_argument('buildfile', type=str, help='The agkbuild file to process.')
+    # parser.add_argument('-jdkpath', type=str, help='The path to Java JDK 8 or above.')
+    # parser.add_argument('-p', '--platform', type=str, help='The platforms to build.')
     args = parser.parse_args()
+    # AgkCompiler.JDK_PATH = args.jdkpath
     _exec_build_tasks(args.buildfile)
 
 
