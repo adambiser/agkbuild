@@ -7,7 +7,7 @@ FILE_3=steam-off.agc;-1
 FILE_4=steam-on.agc;-1
 
 [files]
-FILE_NAME_0=0;main.agc;890;0
+FILE_NAME_0=0;main.agc;930;0
 
 [apk_settings]
 alias=
@@ -31,6 +31,7 @@ version_name=1.0.1
 version_number=2
 firebase_config_path=
 snapchat_client_id=
+app_icon_new_path=
 
 [ipa_settings]
 app_icon_path=
@@ -52,6 +53,8 @@ uses_ads=0
 version_number=
 firebase_config_path=
 snapchat_client_id=
+splash_logo=
+splash_color=
 
 [html5_settings]
 commands_used=0
